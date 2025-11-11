@@ -8,44 +8,15 @@ on:
 
 jobs:
   test:
-    name: Python ${{ matrix.python-version }}, Django ${{ matrix.django-version }}
-    runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ['3.13']
-        django-version: ['5.2']
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Install uv
-      uses: astral-sh/setup-uv@v4
-      with:
-        enable-cache: true
-
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
-
-    - name: Install dependencies
-      run: uv sync
-
-    - name: Run tests
-      run: uv run pytest django_postgres_rls/tests/ -v --tb=short
-
-  integration-tests:
-    name: Integration Tests (PostgreSQL ${{ matrix.postgres-version }})
+    name: Tests - Python ${{ matrix.python-version }}, Django ${{ matrix.django-version }}, PostgreSQL ${{ matrix.postgres-version }}
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
       matrix:
         postgres-version: ['17']
-        python-version: ['3.13']
-        django-version: ['5.2']
+        python-version: ['3.13', '3.12']
+        django-version: ['5.2', '4.2']
 
     services:
       postgres:
@@ -78,7 +49,7 @@ jobs:
     - name: Install dependencies
       run: uv sync
 
-    - name: Run integration tests
+    - name: Run all tests
       env:
         USE_EXISTING_POSTGRES: "1"
         POSTGRES_HOST: localhost
@@ -86,30 +57,7 @@ jobs:
         POSTGRES_USER: postgres
         POSTGRES_PASSWORD: postgres
         POSTGRES_DB: test_rls
-      run: uv run pytest django_postgres_rls/tests/ -v -m integration --tb=short
-
-  coverage:
-    name: Coverage
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Install uv
-      uses: astral-sh/setup-uv@v4
-      with:
-        enable-cache: true
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.13'
-
-    - name: Install dependencies
-      run: uv sync
-
-    - name: Run tests with coverage
-      run: uv run pytest django_postgres_rls/tests/ --cov=django_postgres_rls --cov-report=xml --cov-report=term-missing
+      run: uv run pytest django_postgres_rls/tests/ -v --tb=short --cov=django_postgres_rls --cov-report=xml --cov-report=term-missing
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v4
