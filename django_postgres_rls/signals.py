@@ -131,12 +131,25 @@ def auto_create_rls_roles(sender, app_config, verbosity, **kwargs):
                     continue
 
                 try:
-                    # Create role with NOLOGIN (cannot connect directly to database)
+                    # Create role with minimal permissions (no grants by default)
+                    # NOLOGIN: Cannot connect directly to database
+                    # NOCREATEDB: Cannot create databases
+                    # NOCREATEROLE: Cannot create roles
+                    # NOSUPERUSER: Not a superuser
+                    # NOREPLICATION: Cannot initiate replication
+                    # NOBYPASSRLS: Cannot bypass row-level security
+                    # NOINHERIT: Does not inherit privileges from granted roles
                     cursor.execute(
-                        sql.SQL("CREATE ROLE {} NOLOGIN").format(sql.Identifier(role))
+                        sql.SQL(
+                            "CREATE ROLE {} "
+                            "NOLOGIN NOCREATEDB NOCREATEROLE NOSUPERUSER "
+                            "NOREPLICATION NOBYPASSRLS NOINHERIT"
+                        ).format(sql.Identifier(role))
                     )
 
                     # Grant role to current user so application can SET ROLE to it
+                    # This is the ONLY grant the role receives - no table permissions
+                    # are granted. All access must be controlled by RLS policies.
                     cursor.execute(
                         sql.SQL("GRANT {} TO CURRENT_USER").format(sql.Identifier(role))
                     )
