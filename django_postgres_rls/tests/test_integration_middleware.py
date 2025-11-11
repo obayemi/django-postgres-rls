@@ -26,8 +26,8 @@ from .integration_utils import (
 pytestmark = pytest.mark.integration
 
 
-class TestRLSMiddleware(PostgresRLSMiddleware):
-    """Test middleware implementation."""
+class DemoRLSMiddleware(PostgresRLSMiddleware):
+    """Demo middleware implementation for integration tests."""
 
     def __init__(self, get_response=None):
         super().__init__(get_response or (lambda r: HttpResponse()))
@@ -50,7 +50,7 @@ class TestMiddlewareRoleSwitching:
 
     def test_middleware_switches_role(self, postgres_db, postgres_test_roles):
         """Test that middleware actually switches PostgreSQL role."""
-        middleware = TestRLSMiddleware()
+        middleware = DemoRLSMiddleware()
 
         # Create mock request as staff user
         request = Mock(spec=HttpRequest)
@@ -82,7 +82,7 @@ class TestMiddlewareRoleSwitching:
 
     def test_middleware_sets_session_variable(self, postgres_db, postgres_test_roles):
         """Test that middleware sets session variable for user ID."""
-        middleware = TestRLSMiddleware()
+        middleware = DemoRLSMiddleware()
 
         request = Mock(spec=HttpRequest)
         request.user = Mock()
@@ -105,7 +105,7 @@ class TestMiddlewareRoleSwitching:
 
     def test_middleware_handles_anonymous_user(self, postgres_db, postgres_test_roles):
         """Test middleware with anonymous user."""
-        middleware = TestRLSMiddleware()
+        middleware = DemoRLSMiddleware()
 
         request = Mock(spec=HttpRequest)
         request.user = AnonymousUser()
@@ -126,7 +126,7 @@ class TestMiddlewareRoleSwitching:
 
     def test_middleware_resets_role_on_exception(self, postgres_db, postgres_test_roles):
         """Test that middleware resets role even when exception occurs."""
-        middleware = TestRLSMiddleware()
+        middleware = DemoRLSMiddleware()
 
         request = Mock(spec=HttpRequest)
         request.user = Mock()
@@ -158,7 +158,7 @@ class TestMiddlewareRoleSwitching:
 
     def test_middleware_with_superuser(self, postgres_db, postgres_test_roles):
         """Test middleware with superuser role."""
-        middleware = TestRLSMiddleware()
+        middleware = DemoRLSMiddleware()
 
         request = Mock(spec=HttpRequest)
         request.user = Mock()
@@ -181,7 +181,7 @@ class TestMiddlewareRoleSwitching:
 
     def test_middleware_custom_role_extraction(self, postgres_db, postgres_test_roles):
         """Test middleware with custom role extraction."""
-        middleware = TestRLSMiddleware()
+        middleware = DemoRLSMiddleware()
 
         request = Mock(spec=HttpRequest)
         request._test_role = 'staff'
@@ -248,7 +248,7 @@ class TestMiddlewareWithRLSPolicies:
         ])
 
         # Test as regular user (user 1)
-        middleware = TestRLSMiddleware()
+        middleware = DemoRLSMiddleware()
         request = Mock(spec=HttpRequest)
         request.user = Mock()
         request.user.is_authenticated = True
@@ -290,7 +290,7 @@ class TestMiddlewareWithRLSPolicies:
 
     def test_middleware_transaction_isolation(self, postgres_db, postgres_test_roles):
         """Test that role changes are isolated to transaction."""
-        middleware = TestRLSMiddleware()
+        middleware = DemoRLSMiddleware()
 
         # Request 1
         request1 = Mock(spec=HttpRequest)
@@ -330,7 +330,7 @@ class TestMiddlewareWithRLSPolicies:
 
     def test_middleware_handles_no_user_id(self, postgres_db, postgres_test_roles):
         """Test middleware when user has no ID."""
-        middleware = TestRLSMiddleware()
+        middleware = DemoRLSMiddleware()
 
         request = Mock(spec=HttpRequest)
         request.user = Mock()
@@ -358,7 +358,7 @@ class TestMiddlewareConfiguration:
 
     def test_middleware_custom_role_mapping(self, postgres_db, postgres_test_roles):
         """Test middleware with custom role mapping."""
-        class CustomMiddleware(TestRLSMiddleware):
+        class CustomMiddleware(DemoRLSMiddleware):
             def get_role_mapping(self):
                 return {
                     'user': 'app_user',
@@ -387,7 +387,7 @@ class TestMiddlewareConfiguration:
         """Test middleware respects POSTGRES_RLS_VALID_ROLES setting."""
         settings.POSTGRES_RLS_VALID_ROLES = frozenset(['app_user', 'app_staff', 'app_superuser'])
 
-        middleware = TestRLSMiddleware()
+        middleware = DemoRLSMiddleware()
 
         request = Mock(spec=HttpRequest)
         request.user = Mock()
@@ -411,7 +411,7 @@ class TestMiddlewareErrorHandling:
         """Test middleware handles invalid roles."""
         settings.POSTGRES_RLS_VALID_ROLES = frozenset(['app_user', 'app_staff'])
 
-        class BadMiddleware(TestRLSMiddleware):
+        class BadMiddleware(DemoRLSMiddleware):
             def extract_role(self, request):
                 # Return 'superuser' which maps to 'app_superuser' (not in valid_roles)
                 return 'superuser'
@@ -431,7 +431,7 @@ class TestMiddlewareErrorHandling:
 
     def test_middleware_process_response_always_runs(self, postgres_db, postgres_test_roles):
         """Test that process_response always resets role."""
-        middleware = TestRLSMiddleware()
+        middleware = DemoRLSMiddleware()
 
         request = Mock(spec=HttpRequest)
         request.user = Mock()
