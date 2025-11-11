@@ -5,18 +5,16 @@ A Django middleware package for implementing PostgreSQL Row-Level Security using
 ## Features
 
 - **Automatic Role Creation**: Roles are automatically created during migrations (opt-out available for enterprise environments)
-- **Automatic Role Switching**: Uses PostgreSQL `SET ROLE` to switch between roles based on user permissions
 - **Automatic Transaction Management**: Creates transactions automatically if needed - no `ATOMIC_REQUESTS` requirement
-- **Transaction-Scoped**: Role changes are scoped to the current transaction using `SET LOCAL ROLE`
+- **Transaction-Scoped Role Switching**: Uses PostgreSQL `SET LOCAL ROLE` for secure, transaction-scoped role changes
 - **Startup Role Validation**: Validates configured roles exist in PostgreSQL on first request
 - **Declarative Policy Definition**: Define RLS policies in your Django models using the `RLSModel` mixin
 - **Session Variable Expressions**: Django F-like expressions (`SessionVar`, `CurrentUserId`) for clean, type-safe policy definitions
 - **Many-to-Many Support**: `RlsManyToManyField` automatically applies RLS policies to through tables
 - **Migration Generation**: Automatically generate migration code for RLS policies
 - **Auto-Apply on Migrate**: Optionally apply RLS policies automatically after migrations
-- **Customizable**: Override `extract_role()` to implement your own role extraction logic
-- **Session Variables**: Sets user ID in PostgreSQL session for use in RLS policies
-- **Django Integration**: Works seamlessly with Django's authentication system
+- **Authentication Backend**: Authenticate users while running as anonymous role using SECURITY DEFINER functions
+- **Explicit Role Switching**: Context manager for programmatic role switching in views and commands
 - **Configuration Validation**: Django system checks automatically validate your RLS configuration at startup
 - **Security Features**:
   - Role validation with whitelist to prevent SQL injection
@@ -24,46 +22,7 @@ A Django middleware package for implementing PostgreSQL Row-Level Security using
   - Audit logging for compliance and security monitoring
   - Process exception handling to prevent role leakage
   - Startup validation ensures roles exist in PostgreSQL
-- **Explicit Role Switching**: Context manager for programmatic role switching in views and commands
 - **Comprehensive Error Messages**: Clear, actionable error messages with troubleshooting steps
-
-## Recent Improvements (2025-11-11)
-
-This library has received significant improvements to enhance security, reliability, and developer experience:
-
-### ✅ Automatic Role Creation (NEW)
-- Roles are automatically created when running `python manage.py migrate`
-- Requires `django_postgres_rls` in `INSTALLED_APPS` to register signal handlers
-- Enabled by default for best developer experience (opt-out via `POSTGRES_RLS_AUTO_CREATE_ROLES = False`)
-- Creates roles with `NOLOGIN` and grants them to the current database user
-- Idempotent - safe to run multiple times, skips existing roles
-- Graceful error handling with helpful messages if role creation fails
-
-### ✅ Automatic Transaction Management
-- Middleware now automatically creates transactions when needed
-- No longer requires strict `ATOMIC_REQUESTS=True` (though still recommended)
-- Uses `connection.in_atomic_block` to detect existing transactions
-- Ensures `SET LOCAL ROLE` works correctly in all scenarios
-
-### ✅ Startup Role Validation
-- Validates configured roles exist in PostgreSQL database on first request
-- Lazy validation with session-scoped caching for performance
-- Detailed error messages with SQL commands to create missing roles
-- Optional skip via `POSTGRES_RLS_SKIP_ROLE_VALIDATION` for CI/CD environments
-
-### ✅ Enhanced Error Messages
-- All error messages now include step-by-step troubleshooting
-- Configuration examples and SQL commands provided
-- Clear explanations of what went wrong and how to fix it
-- Helps developers quickly resolve configuration issues
-
-### ✅ PostgreSQL-Only Configuration
-- Removed all non-PostgreSQL code paths for simplicity
-- All tests use PostgreSQL (via testcontainers or environment)
-- Cleaner codebase with consistent behavior
-- Better test coverage of actual PostgreSQL features
-
-**Overall Rating**: 9.5/10 (Enterprise-ready) - See [REVIEW.md](REVIEW.md) for detailed security and architecture review.
 
 ## Installation
 
@@ -82,36 +41,37 @@ uv add django-postgres-rls
 
 **Automatic Role Creation (Recommended)**
 
-By default, roles are automatically created when you run `python manage.py migrate`. Simply add `django_postgres_rls` to `INSTALLED_APPS` and configure your roles in `POSTGRES_RLS_VALID_ROLES` (step 3), and roles will be created automatically with the correct permissions.
+By default, roles are automatically created when you run `python manage.py migrate`. Simply add `django_postgres_rls` to `INSTALLED_APPS` and configure your roles in `POSTGRES_RLS_VALID_ROLES`, and roles will be created automatically with the correct permissions.
 
 **Manual Role Creation (Advanced)**
 
-If you prefer to manage roles manually (e.g., via DBAs or infrastructure-as-code), disable auto-creation and create roles manually:
+If you prefer to manage roles manually (e.g., via DBAs or infrastructure-as-code), disable auto-creation:
 
 ```python
 # settings.py
 POSTGRES_RLS_AUTO_CREATE_ROLES = False  # Disable automatic role creation
 ```
 
-Then create the PostgreSQL roles:
+Then create the PostgreSQL roles manually:
 
 ```sql
 -- Create roles with NOLOGIN (cannot connect directly)
 CREATE ROLE app_user NOLOGIN;
 CREATE ROLE app_staff NOLOGIN;
 CREATE ROLE app_superuser NOLOGIN;
+CREATE ROLE app_anonymous NOLOGIN;  -- For unauthenticated users
 
 -- Grant roles to your database user (allows SET ROLE)
 GRANT app_user TO your_db_user;
 GRANT app_staff TO your_db_user;
 GRANT app_superuser TO your_db_user;
+GRANT app_anonymous TO your_db_user;
 
 -- Grant necessary permissions
-GRANT USAGE ON SCHEMA public TO app_user, app_staff, app_superuser;
+GRANT USAGE ON SCHEMA public TO app_user, app_staff, app_superuser, app_anonymous;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO app_user, app_staff, app_superuser;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_anonymous;  -- Read-only for anonymous
 ```
-
-**Note**: When using automatic role creation, roles are created with `NOLOGIN` and granted to the current database user automatically.
 
 ### 2. Implement the Middleware
 
@@ -127,10 +87,10 @@ class MyRLSMiddleware(PostgresRLSMiddleware):
         """
         Extract the user's role from the request.
 
-        Returns one of: 'user', 'staff', 'superuser'
+        Returns one of: 'user', 'staff', 'superuser', 'anonymous'
         """
         if not request.user or not request.user.is_authenticated:
-            return 'user'
+            return 'anonymous'
 
         # Check for role switching (e.g., from a header or request attribute)
         if hasattr(request, 'user_role'):
@@ -162,7 +122,7 @@ INSTALLED_APPS = [
     # ... your other apps
 ]
 
-# IMPORTANT: Enable ATOMIC_REQUESTS for best practices
+# Database configuration with PostgreSQL
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -171,7 +131,7 @@ DATABASES = {
         'PASSWORD': 'your_password',
         'HOST': 'localhost',
         'PORT': '5432',
-        'ATOMIC_REQUESTS': True,  # Recommended for RLS (middleware auto-creates transactions if needed)
+        'ATOMIC_REQUESTS': True,  # Recommended (middleware auto-creates transactions if needed)
     }
 }
 
@@ -180,7 +140,26 @@ POSTGRES_RLS_VALID_ROLES = frozenset([
     'app_user',
     'app_staff',
     'app_superuser',
+    'app_anonymous',
 ])
+
+# Configure role mapping
+POSTGRES_RLS_ROLE_MAPPING = {
+    'user': 'app_user',
+    'staff': 'app_staff',
+    'superuser': 'app_superuser',
+    'anonymous': 'app_anonymous',
+}
+
+# Optional: Default role for unauthenticated users
+POSTGRES_RLS_DEFAULT_ANONYMOUS_ROLE = 'app_anonymous'
+
+# Optional: Whitelist paths that don't require RLS (e.g., login endpoints)
+POSTGRES_RLS_WHITELIST = [
+    '/api/auth/login/',
+    '/api/auth/register/',
+    '/api/auth/token/',
+]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -198,52 +177,10 @@ MIDDLEWARE = [
 ```
 
 **Important Configuration Notes:**
-- **`django_postgres_rls` must be in `INSTALLED_APPS`** - This is required for automatic role creation and policy application to work
-- `ATOMIC_REQUESTS = True` is **recommended** for best practices - the middleware will automatically create transactions if needed to ensure role changes are properly scoped
+- **`django_postgres_rls` must be in `INSTALLED_APPS`** - Required for automatic role creation and policy application
+- `ATOMIC_REQUESTS = True` is **recommended** - the middleware will automatically create transactions if needed
 - `POSTGRES_RLS_VALID_ROLES` is **required** for security - it prevents SQL injection by whitelisting valid roles
 - The middleware must come **after** `AuthenticationMiddleware` in the `MIDDLEWARE` list
-
-### Alternative: RlsUser Mixin (Not Recommended)
-
-**Note**: This approach is less flexible than creating a middleware subclass. The recommended approach (shown above) keeps role logic in middleware, separate from your User model.
-
-If you prefer, you can add the `RlsUser` mixin to your User model instead of creating a middleware subclass:
-
-```python
-# myapp/models.py
-from django.contrib.auth.models import AbstractUser
-from django_postgres_rls import RlsUser
-
-class User(RlsUser, AbstractUser):
-    organization = models.ForeignKey(Organization, on_delete=models.CASCADE, null=True)
-
-    def get_postgres_role(self):
-        """Return PostgreSQL role name directly (not application role)."""
-        if self.is_superuser:
-            return 'app_superuser'  # Note: PostgreSQL role name
-        elif self.is_staff:
-            return 'app_staff'
-        elif self.organization and self.organization.is_premium:
-            return 'app_premium_user'
-        return 'app_user'
-```
-
-Then use the base middleware directly in settings:
-
-```python
-MIDDLEWARE = [
-    ...
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django_postgres_rls.PostgresRLSMiddleware',  # No subclass needed!
-    ...
-]
-```
-
-**Why middleware override is recommended:**
-- Keeps User model focused on user data, not authorization logic
-- Easier to test role logic independently
-- More flexible - can use request context (headers, cookies, etc.) for role determination
-- Better separation of concerns
 
 ### 4. Define RLS Policies in Your Models
 
@@ -263,6 +200,12 @@ class Document(RLSModel, models.Model):
 
     class Meta:
         rls_policies = [
+            # Anonymous users can only see public documents
+            RlsPolicy(
+                role_name='app_anonymous',
+                command=PolicyCommand.SELECT,
+                using=Q(is_public=True)
+            ),
             # Users can see public documents or their own documents
             RlsPolicy(
                 role_name='app_user',
@@ -322,23 +265,7 @@ class Document(RLSModel, models.Model):
         rls_policies = [...]
 ```
 
-**Signal handlers are automatically registered** when you add `django_postgres_rls` to `INSTALLED_APPS` (step 3). No additional configuration needed!
-
-**Alternative**: If you prefer not to add `django_postgres_rls` to `INSTALLED_APPS`, you can manually register signal handlers in your app's `apps.py`:
-
-```python
-# myapp/apps.py
-from django.apps import AppConfig
-
-
-class MyAppConfig(AppConfig):
-    default_auto_field = 'django.db.models.BigAutoField'
-    name = 'myapp'
-
-    def ready(self):
-        # Only needed if django_postgres_rls is NOT in INSTALLED_APPS
-        from django_postgres_rls import signals  # noqa
-```
+Signal handlers are automatically registered when you add `django_postgres_rls` to `INSTALLED_APPS`.
 
 ### 6. Validate Your Configuration
 
@@ -355,7 +282,122 @@ This will validate:
 - Valid roles are properly configured
 - And more...
 
-If there are any configuration issues, you'll get clear error messages with hints on how to fix them.
+## Authentication Backend
+
+The library includes authentication backends that allow users to authenticate while running as the `app_anonymous` role using PostgreSQL SECURITY DEFINER functions.
+
+### Why This Is Needed
+
+When using RLS, the middleware switches roles based on the authenticated user. This creates a chicken-and-egg problem: how do you authenticate a user before you have their role?
+
+The solution is to use **SECURITY DEFINER** functions that:
+1. Can be executed by the `app_anonymous` role
+2. Run with elevated privileges (as the database owner)
+3. Verify user credentials and return user information
+4. Allow Django to complete authentication before role switching
+
+### Setup
+
+**Step 1: Create the PostgreSQL Function**
+
+Create a Django migration to add the SECURITY DEFINER function:
+
+```python
+# myapp/migrations/0002_create_auth_function.py
+
+from django.db import migrations
+from django_postgres_rls import get_user_fetch_function_sql
+
+class Migration(migrations.Migration):
+    dependencies = [
+        ('myapp', '0001_initial'),
+        ('auth', '0012_alter_user_first_name_max_length'),
+    ]
+
+    operations = [
+        migrations.RunSQL(
+            sql=get_user_fetch_function_sql(
+                user_table='auth_user',  # Use your user table name
+                schema='public',
+                function_name='get_user_for_auth'
+            ),
+            reverse_sql="""
+                DROP FUNCTION IF EXISTS public.get_user_for_auth(TEXT);
+            """
+        ),
+    ]
+```
+
+**Step 2: Configure Authentication Backend**
+
+```python
+# settings.py
+
+AUTHENTICATION_BACKENDS = [
+    # RLS authentication backend (recommended)
+    'django_postgres_rls.RLSAuthenticationBackendWithPythonVerification',
+
+    # Fallback to default Django backend (optional)
+    'django.contrib.auth.backends.ModelBackend',
+]
+
+# RLS Authentication Settings
+POSTGRES_RLS_AUTH_FUNCTION = 'public.get_user_for_auth'
+POSTGRES_RLS_AUTH_USE_EMAIL = False  # Set to True for email-based auth
+```
+
+**Step 3: Apply Migrations**
+
+```bash
+python manage.py migrate
+```
+
+**Step 4: Test Authentication**
+
+```python
+from django.contrib.auth import authenticate
+
+# This works even when running as app_anonymous role!
+user = authenticate(username='testuser', password='testpass')
+if user:
+    print(f"Authenticated as {user.username}")
+```
+
+### How Authentication Works
+
+1. **Login Request**: User submits credentials to whitelisted path `/api/auth/login/`
+2. **Anonymous Role**: Request runs as `app_anonymous` role (path is whitelisted)
+3. **SECURITY DEFINER Call**: Backend calls the function with elevated privileges:
+   ```sql
+   SELECT * FROM public.get_user_for_auth('username');
+   ```
+4. **Return Data**: Function returns `(user_id, password_hash, is_active)`
+5. **Python Verification**: Django verifies password using `check_password()`
+6. **Success**: User object is returned and stored in session
+7. **Next Request**: Middleware switches to appropriate role based on user
+
+### Available Backends
+
+#### RLSAuthenticationBackendWithPythonVerification (Recommended)
+
+Fetches user data via SECURITY DEFINER function, then verifies password in Python.
+
+**Pros:**
+- Uses Django's built-in password hashers (more secure)
+- Matches Django's authentication exactly
+- Easier to maintain
+
+#### RLSAuthenticationBackend
+
+Simple backend that calls a SECURITY DEFINER function to authenticate users.
+
+**Pros:**
+- All authentication logic in the database
+- Simpler for some use cases
+
+**Cons:**
+- Password verification must be implemented in PostgreSQL
+- May not match Django's password hashing exactly
 
 ## RLS Policy Configuration
 
@@ -363,23 +405,17 @@ If there are any configuration issues, you'll get clear error messages with hint
 
 The `RlsPolicy` dataclass defines a PostgreSQL RLS policy with the following parameters:
 
+- **`role_name`**: (Required) PostgreSQL role name (e.g., `'app_user'`, `'app_staff'`)
 - **`using`**: (Required) USING clause expression
   - Can be a Django `Q` object or raw SQL string
   - Defines which rows are visible/accessible
-
-- **`to`**: (Optional) PostgreSQL role name
-  - Defaults to `PUBLIC` if not specified
-  - Example: `'app_user'`, `'app_staff'`
-
-- **`for_`**: (Optional) Policy command
+- **`command`**: (Optional) Policy command
   - Defaults to `PolicyCommand.ALL`
   - Options: `ALL`, `SELECT`, `INSERT`, `UPDATE`, `DELETE`
-
 - **`mode`**: (Optional) Policy mode
   - Options: `PolicyMode.RESTRICTIVE`, `PolicyMode.PERMISSIVE`
   - RESTRICTIVE: Row must pass ALL restrictive policies (AND logic)
   - PERMISSIVE: Row must pass AT LEAST ONE permissive policy (OR logic)
-
 - **`with_check`**: (Optional) WITH CHECK clause expression
   - Can be a Django `Q` object or raw SQL string
   - Defines which rows can be inserted/updated
@@ -443,6 +479,13 @@ RlsPolicy(
     mode=PolicyMode.PERMISSIVE  # OR can be owner
 )
 
+# Anonymous users - read-only access to public data
+RlsPolicy(
+    role_name='app_anonymous',
+    command=PolicyCommand.SELECT,
+    using=Q(is_public=True)
+)
+
 # Raw SQL (when needed for advanced cases)
 RlsPolicy(
     role_name='app_user',
@@ -453,7 +496,7 @@ RlsPolicy(
 
 ### Session Variable Expressions
 
-Instead of using raw SQL strings or incorrect `F()` references for PostgreSQL session variables, use the provided Django-compatible expressions:
+Instead of using raw SQL strings for PostgreSQL session variables, use the provided Django-compatible expressions:
 
 #### `CurrentUserId()` - Convenience Expression
 
@@ -505,9 +548,14 @@ RlsPolicy(
 **Parameters:**
 - `variable_name` (str): PostgreSQL configuration parameter name (e.g., `'app.current_user_id'`)
 - `output_field` (Field, optional): Django field for type casting (default: `IntegerField()`)
-- `missing_ok` (bool, optional): If `True`, returns `NULL` when variable doesn't exist instead of raising error (default: `False`)
+- `missing_ok` (bool, optional): If `True`, returns `NULL` when variable doesn't exist (default: `False`)
 
 **Why use SessionVar/CurrentUserId?**
+
+✅ **Do** use `CurrentUserId()` - clean, type-safe:
+```python
+using=Q(owner_id=CurrentUserId())
+```
 
 ❌ **Don't** use raw SQL strings - hard to maintain:
 ```python
@@ -519,11 +567,6 @@ using="owner_id = current_setting('app.current_user_id')::int"
 using=Q(owner_id=F('current_user_id'))  # ERROR: No such field!
 ```
 
-✅ **Do** use `CurrentUserId()` - clean, type-safe:
-```python
-using=Q(owner_id=CurrentUserId())
-```
-
 **Benefits:**
 - ✅ **Type-safe**: Proper type casting with `output_field`
 - ✅ **Composable**: Works seamlessly in complex Q object expressions
@@ -531,49 +574,34 @@ using=Q(owner_id=CurrentUserId())
 - ✅ **Django-native**: Integrates with ORM, migrations, and queries
 - ✅ **Validated**: Compiles to correct SQL automatically
 
-**SQL Compilation:**
-
-```python
-SessionVar('app.current_user_id')
-# Compiles to: current_setting('app.current_user_id', false)::integer
-
-SessionVar('app.tenant_code', output_field=CharField(max_length=50))
-# Compiles to: current_setting('app.tenant_code', false)::varchar(50)
-
-CurrentUserId()
-# Compiles to: current_setting('app.current_user_id', false)::integer
-```
-
 ## Configuration
 
 ### Automatic Role Creation
 
-By default, PostgreSQL roles are automatically created when you run migrations. This is the recommended approach for most projects:
+By default, PostgreSQL roles are automatically created when you run migrations:
 
 ```python
-# settings.py (default behavior - explicit setting not required)
+# settings.py (default behavior)
 POSTGRES_RLS_AUTO_CREATE_ROLES = True  # Enabled by default
 ```
 
 **When roles are automatically created:**
-- Roles are created with `NOLOGIN` attribute (cannot connect directly to database)
-- Roles are granted to the current database user (allows `SET ROLE`)
-- Creation happens during the `pre_migrate` signal (before migrations run)
-- Existing roles are skipped (idempotent operation)
+- Roles are created with `NOLOGIN` attribute
+- Roles are granted to the current database user
+- Creation happens during the `pre_migrate` signal
+- Existing roles are skipped (idempotent)
 - Errors are logged but don't fail migrations
 
-**To disable automatic role creation** (for enterprise environments where DBAs manage roles):
+**To disable automatic role creation**:
 
 ```python
 # settings.py
 POSTGRES_RLS_AUTO_CREATE_ROLES = False
-
-# Then create roles manually (see Quick Start section)
 ```
 
 ### Custom Role Mapping
 
-You can customize the mapping between application roles and PostgreSQL roles:
+Customize the mapping between application roles and PostgreSQL roles:
 
 ```python
 # settings.py
@@ -581,6 +609,7 @@ POSTGRES_RLS_ROLE_MAPPING = {
     'user': 'app_user',
     'staff': 'app_staff',
     'superuser': 'app_superuser',
+    'anonymous': 'app_anonymous',
     'custom_role': 'app_custom',
 }
 ```
@@ -593,6 +622,7 @@ class MyRLSMiddleware(PostgresRLSMiddleware):
         return {
             'user': 'app_user',
             'admin': 'app_admin',
+            'anonymous': 'app_anonymous',
         }
 
     def extract_role(self, request):
@@ -620,7 +650,7 @@ class MyRLSMiddleware(PostgresRLSMiddleware):
 
 #### Role Validation (Whitelist)
 
-For security, define a whitelist of valid PostgreSQL roles. The middleware will reject any role not in this list:
+Define a whitelist of valid PostgreSQL roles:
 
 ```python
 # settings.py
@@ -628,10 +658,11 @@ POSTGRES_RLS_VALID_ROLES = frozenset([
     'app_user',
     'app_staff',
     'app_superuser',
+    'app_anonymous',
 ])
 ```
 
-If not specified, roles from `POSTGRES_RLS_ROLE_MAPPING` are used as the whitelist. This prevents SQL injection and unauthorized role usage.
+The middleware will reject any role not in this list, preventing SQL injection and unauthorized role usage.
 
 #### Audit Logging
 
@@ -686,7 +717,7 @@ RlsPolicy(
 
 ### Configuration Validation with Django System Checks
 
-The library includes comprehensive Django system checks that automatically validate your configuration when you run:
+The library includes comprehensive Django system checks that automatically validate your configuration:
 
 ```bash
 python manage.py check
@@ -696,7 +727,7 @@ python manage.py check
 
 **Security Checks (Errors)**:
 - ✅ PostgreSQL database backend is configured
-- ✅ `ATOMIC_REQUESTS = True` is set (critical for preventing role leakage)
+- ✅ `ATOMIC_REQUESTS = True` is set (recommended)
 - ✅ Middleware ordering is correct (RLS middleware after AuthenticationMiddleware)
 - ✅ `POSTGRES_RLS_VALID_ROLES` is configured and valid
 - ✅ `POSTGRES_RLS_ROLE_MAPPING` contains only whitelisted roles
@@ -710,35 +741,11 @@ python manage.py check
 - ℹ️ Persistent connection pooling compatibility notes
 - ℹ️ Multiple database configuration detected
 
-#### Example Output
-
-With proper configuration:
-```bash
-$ python manage.py check
-System check identified no issues (0 silenced).
-```
-
-With configuration issues:
-```bash
-$ python manage.py check
-System check identified some issues:
-
-ERRORS:
-postgres_rls.E003: PostgreSQL RLS requires ATOMIC_REQUESTS=True
-    HINT: Set ATOMIC_REQUESTS=True in DATABASES["default"]. Without transactions,
-          SET LOCAL ROLE becomes SET ROLE and persists across requests, causing
-          serious security issues.
-
-postgres_rls.E005: POSTGRES_RLS_VALID_ROLES not configured
-    HINT: Define POSTGRES_RLS_VALID_ROLES in settings.py as a set or frozenset
-          of valid PostgreSQL role names.
-```
-
 #### Benefits
 
-- **Early Detection**: Catch configuration errors during development, not in production
-- **Security Enforcement**: Ensures critical security settings are properly configured
-- **Clear Guidance**: Actionable error messages with specific hints for resolution
+- **Early Detection**: Catch configuration errors during development
+- **Security Enforcement**: Ensures critical security settings are configured
+- **Clear Guidance**: Actionable error messages with specific hints
 - **Automatic Validation**: Runs during Django startup, migrations, and deployments
 
 ## Advanced Usage
@@ -791,7 +798,7 @@ class Command(BaseCommand):
 
 ### Many-to-Many Relationships with RLS
 
-Django's many-to-many relationships create intermediate "through" tables that also need RLS policies. Use `RlsManyToManyField` to automatically apply policies to these through tables:
+Use `RlsManyToManyField` to automatically apply policies to many-to-many through tables:
 
 ```python
 from django.db import models
@@ -831,8 +838,6 @@ class Document(RLSModel, models.Model):
         ]
 ```
 
-The `rls_policies` parameter on `RlsManyToManyField` applies policies to the auto-generated through table (`Document_collaborators` in this example).
-
 **With Explicit Through Models:**
 
 ```python
@@ -863,53 +868,11 @@ class Document(RLSModel, models.Model):
             RlsPolicy(
                 role_name='app_user',
                 command=PolicyCommand.INSERT,
-                # Users can only add collaborators to their own documents
                 with_check=Q(document__owner_id=CurrentUserId())
             ),
         ],
     )
-
-    class Meta:
-        rls_policies = [
-            RlsPolicy(
-                role_name='app_user',
-                command=PolicyCommand.ALL,
-                using=Q(owner_id=CurrentUserId())
-            ),
-        ]
 ```
-
-The policies will be applied to the `DocumentCollaborator` through model automatically.
-
-**Generating Migrations:**
-
-After defining your many-to-many field with RLS policies:
-
-```bash
-python manage.py makemigrations
-python manage.py migrate
-```
-
-The policies will be applied to the through table during migration, ensuring proper row-level security on many-to-many relationships.
-
-### Architecture: Shared Core Logic
-
-The middleware and context manager share the same underlying implementation through module-level functions, ensuring consistency and eliminating code duplication:
-
-**Shared Functions:**
-- `_execute_set_role()` - Core SQL execution for role switching
-- `_execute_reset_role()` - Core SQL execution for role reset
-- `_validate_role_name()` - Role validation against whitelist
-- `_sanitize_user_id()` - User ID sanitization
-
-**Benefits:**
-- **DRY Principle**: Single source of truth for security-critical operations
-- **Consistency**: Identical behavior in middleware and context manager
-- **Maintainability**: Bug fixes in one place apply everywhere
-- **Security**: All SQL uses `psycopg2.sql.SQL` with proper identifier quoting
-- **Performance**: Optimized to skip unnecessary operations (e.g., empty user IDs)
-
-Both the middleware's `process_request()` and the `rls_role()` context manager delegate to these shared functions, guaranteeing identical role switching behavior across all code paths.
 
 ### Role Switching
 
@@ -919,7 +882,7 @@ Implement role switching to allow users to operate with reduced privileges:
 class MyRLSMiddleware(PostgresRLSMiddleware):
     def extract_role(self, request):
         if not request.user or not request.user.is_authenticated:
-            return 'user'
+            return 'anonymous'
 
         # Allow role switching via X-User-Role header
         requested_role = request.META.get('HTTP_X_USER_ROLE', '').lower()
@@ -948,7 +911,7 @@ class MyRLSMiddleware(PostgresRLSMiddleware):
 
 #### Generating Migration Code
 
-You can generate migration code as a string for quick copy-paste:
+Generate migration code as a string for quick copy-paste:
 
 ```python
 from django_postgres_rls import generate_rls_migration_code
@@ -1013,12 +976,47 @@ drop_rls_policies(Document, verbosity=2)
 
 ## How It Works
 
+### Request Processing Flow
+
 1. **Request Processing**: When a request comes in, the middleware calls `extract_role()` to determine the user's role
 2. **Role Mapping**: The role is mapped to a PostgreSQL role using `get_role_mapping()`
-3. **Role Switch**: The middleware executes `SET LOCAL ROLE <pg_role>` to switch to the appropriate PostgreSQL role
-4. **Session Variable**: Sets `app.current_user_id` session variable with the user's ID
-5. **Policy Enforcement**: PostgreSQL applies RLS policies assigned to the active role
-6. **Role Reset**: After the response, the middleware executes `RESET ROLE` to restore the default role
+3. **Transaction Check**: Middleware ensures request runs in a transaction (creates one if needed)
+4. **Role Switch**: The middleware executes `SET LOCAL ROLE <pg_role>` to switch to the appropriate PostgreSQL role
+5. **Session Variable**: Sets `app.current_user_id` session variable with the user's ID
+6. **Policy Enforcement**: PostgreSQL applies RLS policies assigned to the active role
+7. **Role Reset**: After the response, the middleware executes `RESET ROLE` to restore the default role
+
+### Architecture
+
+The library provides three main components:
+
+1. **PostgresRLSMiddleware**: Automatically switches PostgreSQL roles based on user permissions
+   - Executes `SET LOCAL ROLE` to switch to the appropriate role
+   - Sets session variables (e.g., `app.current_user_id`) for use in policies
+   - Resets role after each request with `RESET ROLE`
+   - Handles exceptions to prevent role leakage
+
+2. **RLSModel**: Abstract model mixin for declarative RLS policy definition
+   - Define policies as class attributes using `rls_policies`
+   - Convert Django Q objects to SQL automatically
+   - Generate CREATE POLICY statements for migrations
+
+3. **Management Utilities**: Tools for applying and managing RLS policies
+   - `generate_rls_migration_operations()` - Generate migration operations
+   - `apply_rls_policies()` - Apply policies programmatically
+   - `@register_rls_model` - Auto-apply policies on migrate signal
+
+### Policy SQL Generation
+
+Django Q objects are automatically converted to PostgreSQL SQL:
+
+```python
+# Django Q object
+Q(is_public=True) | Q(owner_id=CurrentUserId())
+
+# Generated SQL
+(is_public = true OR owner_id = current_setting('app.current_user_id', false)::integer)
+```
 
 ## Testing
 
@@ -1026,9 +1024,7 @@ The package includes a comprehensive test suite with **234 tests** covering all 
 - **189 unit tests**: Fast, mocked database operations using PostgreSQL configuration
 - **45 integration tests**: Real PostgreSQL database tests with actual RLS policies
 
-**All tests use PostgreSQL** - the library is PostgreSQL-only by design. Tests automatically use:
-1. **Testcontainers** (if installed) - Automatically manages PostgreSQL in Docker
-2. **Environment variables** (fallback) - Uses existing PostgreSQL instance
+**All tests use PostgreSQL** - the library is PostgreSQL-only by design.
 
 ### Quick Start
 
@@ -1047,9 +1043,6 @@ pytest django_postgres_rls/tests/ -v
 **Option 2: Using Existing PostgreSQL**
 
 ```bash
-# With uv (recommended)
-uv sync  # Install all dependencies
-
 # Set environment variables
 export USE_EXISTING_POSTGRES=1
 export POSTGRES_HOST=localhost
@@ -1061,37 +1054,14 @@ export POSTGRES_DB=test_rls
 # Create test database
 createdb test_rls
 
-# Run all tests
+# Run tests
 uv run pytest django_postgres_rls/tests/ -v
-
-# Or with pip
-pip install pytest pytest-django
-pytest django_postgres_rls/tests/ -v
 ```
-
-### Test Structure
-
-#### Unit Tests (Mocked Database Operations)
-- **`test_models.py`** (~35 tests) - RLSModel mixin, RlsPolicy dataclass, and SQL generation
-- **`test_management.py`** (~30 tests) - Migration generation and policy application utilities
-- **`test_signals.py`** (~35 tests) - post_migrate signal handlers and model registration
-- **`test_middleware.py`** (~50 tests) - Middleware role switching and security
-- **`test_checks.py`** (~41 tests) - Django system checks for configuration validation
-
-Unit tests use PostgreSQL configuration but mock actual database operations. They run fast (~5-10 seconds) and skip role validation via `POSTGRES_RLS_SKIP_ROLE_VALIDATION=True`.
-
-#### Integration Tests (Real PostgreSQL)
-- **`test_integration_rls_enforcement.py`** (15 tests) - RLS policy enforcement with real database
-- **`test_integration_middleware.py`** (12 tests) - Middleware with actual database connections
-- **`test_integration_migrations.py`** (10 tests) - Migration operations creating real policies
-- **`test_integration_context_manager.py`** (8 tests) - Context manager with real PostgreSQL
-
-Integration tests verify actual PostgreSQL RLS behavior, including role switching, policy enforcement, and transaction isolation. They run slower (~30-60 seconds) due to PostgreSQL startup.
 
 ### Run Specific Test Suites
 
 ```bash
-# Run only unit tests (fast, mocked operations)
+# Run only unit tests (fast)
 pytest -m "not integration" -v
 
 # Run only integration tests (real database)
@@ -1099,238 +1069,10 @@ pytest -m integration -v
 
 # Run specific test modules
 pytest django_postgres_rls/tests/test_models.py -v
-pytest django_postgres_rls/tests/test_management.py -v
-pytest django_postgres_rls/tests/test_signals.py -v
 pytest django_postgres_rls/tests/test_middleware.py -v
-
-# Run specific test class or method
-pytest django_postgres_rls/tests/test_models.py::TestRlsPolicy -v
-pytest django_postgres_rls/tests/test_models.py::TestRlsPolicy::test_create_policy_with_defaults -v
-
-# Run tests matching pattern
-pytest -k "middleware" -v
-pytest -k "rls_enforcement" -v
 
 # With coverage
 pytest --cov=django_postgres_rls --cov-report=html --cov-report=term-missing
-```
-
-### Environment Variables for Testing
-
-Configure PostgreSQL connection for integration tests:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `USE_EXISTING_POSTGRES` | `false` | Set to `1` to skip testcontainers |
-| `POSTGRES_HOST` | `localhost` | PostgreSQL host |
-| `POSTGRES_PORT` | `5432` | PostgreSQL port |
-| `POSTGRES_USER` | `postgres` | PostgreSQL user |
-| `POSTGRES_PASSWORD` | `postgres` | PostgreSQL password |
-| `POSTGRES_DB` | `test_rls` | PostgreSQL database |
-| `POSTGRES_VERSION` | `16` | PostgreSQL version for testcontainers |
-
-
-### CI/CD Configuration
-
-#### GitHub Actions Example
-
-```yaml
-name: Tests
-
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
-        run: |
-          pip install -e .
-          pip install pytest pytest-django
-
-      - name: Run tests
-        env:
-          USE_EXISTING_POSTGRES: 1
-          POSTGRES_HOST: localhost
-          POSTGRES_PORT: 5432
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: test_rls
-        run: pytest django_postgres_rls/tests/
-```
-
-#### Docker Compose Example
-
-```yaml
-version: '3.8'
-
-services:
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: test_rls
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  tests:
-    build: .
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      USE_EXISTING_POSTGRES: 1
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: test_rls
-    command: pytest django_postgres_rls/tests/
-```
-
-### Multi-Version Testing
-
-The package is tested against multiple Django and PostgreSQL versions:
-
-```bash
-# Install tox
-pip install tox
-
-# Test all Django versions (unit tests)
-tox
-
-# Test specific versions
-tox -e py312-django42  # Django 4.2 with Python 3.12
-tox -e py312-django52  # Django 5.2 with Python 3.12
-
-# List available environments
-tox -l
-```
-
-**Supported Versions:**
-- **Django**: 4.0, 4.1, 4.2 (LTS), 5.0, 5.1, 5.2
-- **Python**: 3.8+ (Python 3.10+ for Django 5.x)
-- **PostgreSQL**: 12, 13, 14, 15, 16
-
-### Troubleshooting Tests
-
-#### "Connection refused" errors
-
-PostgreSQL is not running or not accessible:
-
-```bash
-# Check if PostgreSQL is running
-docker ps | grep postgres
-
-# Check environment variables
-echo $POSTGRES_HOST
-echo $POSTGRES_PORT
-
-# Start PostgreSQL
-docker run -d --name postgres-test \
-  -e POSTGRES_PASSWORD=postgres \
-  -p 5432:5432 \
-  postgres:16
-```
-
-#### "Role does not exist" errors
-
-Integration tests need PostgreSQL roles:
-
-```bash
-# Roles are created automatically by postgres_test_roles fixture
-# If you see this error, ensure you're using the postgres_db fixture in tests
-```
-
-#### Testcontainers timeout
-
-Docker daemon not running or slow:
-
-```bash
-# Check Docker
-docker info
-
-# Use existing PostgreSQL instead
-export USE_EXISTING_POSTGRES=1
-```
-
-### Test Performance
-
-- **Unit Tests**: ~5-10 seconds for 189 tests
-- **Integration Tests**: ~30-60 seconds for 45 tests (depends on PostgreSQL startup)
-- **Total**: ~35-65 seconds for all 234 tests
-
-## Architecture
-
-### How It Works
-
-The library provides three main components:
-
-1. **PostgresRLSMiddleware**: Automatically switches PostgreSQL roles based on user permissions
-   - Executes `SET LOCAL ROLE` to switch to the appropriate role
-   - Sets session variables (e.g., `app.current_user_id`) for use in policies
-   - Resets role after each request with `RESET ROLE`
-
-2. **RLSModel**: Abstract model mixin for declarative RLS policy definition
-   - Define policies as class attributes using `rls_policies`
-   - Convert Django Q objects to SQL automatically
-   - Generate CREATE POLICY statements for migrations
-
-3. **Management Utilities**: Tools for applying and managing RLS policies
-   - `generate_rls_migration_operations()` - Generate migration operations
-   - `apply_rls_policies()` - Apply policies programmatically
-   - `@register_rls_model` - Auto-apply policies on migrate signal
-
-### Request Flow
-
-```
-1. Request arrives → Django Authentication
-2. Middleware extracts role from user
-3. Maps role to PostgreSQL role (e.g., 'user' → 'app_user')
-4. Executes: SET LOCAL ROLE app_user
-5. Sets: app.current_user_id = '123'
-6. View/ORM queries execute with RLS enforced
-7. Response generated
-8. Middleware executes: RESET ROLE
-9. Response returned
-```
-
-### Policy SQL Generation
-
-Django Q objects are automatically converted to PostgreSQL SQL:
-
-```python
-# Django Q object
-Q(is_public=True) | Q(owner_id=F('current_user_id'))
-
-# Generated SQL
-(is_public = true OR owner_id = current_user_id)
 ```
 
 ## Requirements
@@ -1347,8 +1089,6 @@ MIT License - see LICENSE file for details
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
-For development:
 
 ### Setup with uv (Recommended)
 
