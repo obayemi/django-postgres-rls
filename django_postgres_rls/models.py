@@ -164,6 +164,9 @@ class RLSModel(models.Model):
     attribute named 'rls_policies'. Policies are defined as a list of
     RlsPolicy dataclass instances.
 
+    Models inheriting from RLSModel are automatically registered for RLS
+    policy application during migrations (no @register_rls_model decorator needed).
+
     Example usage:
         class Document(RLSModel, models.Model):
             title = models.CharField(max_length=200)
@@ -212,6 +215,48 @@ class RLSModel(models.Model):
 
     class Meta:
         abstract = True
+
+    def __init_subclass__(cls, **kwargs):
+        """
+        Automatically register concrete RLSModel subclasses for RLS policy application.
+
+        This hook is called whenever a class inherits from RLSModel. It automatically
+        registers the model so that RLS policies are applied during migrations without
+        needing the @register_rls_model decorator.
+        """
+        super().__init_subclass__(**kwargs)
+
+        # Defer registration until Django's ModelBase metaclass has fully processed the model
+        # We need to wait until _meta is properly initialized
+        def register():
+            """Register the model when it's fully initialized."""
+            # Only register concrete models (not abstract models)
+            # Check Meta.abstract to determine if this is an abstract model
+            is_abstract = False
+            if hasattr(cls, '_meta'):
+                is_abstract = getattr(cls._meta, 'abstract', False)
+            elif hasattr(cls, 'Meta'):
+                is_abstract = getattr(cls.Meta, 'abstract', False)
+
+            if not is_abstract:
+                # Import register_rls_model here to avoid circular imports at module load
+                try:
+                    from .signals import register_rls_model
+                    register_rls_model(cls)
+                except ImportError:
+                    # signals module not available yet, skip registration
+                    pass
+
+        # Store the registration callback to be processed later
+        # We can't execute it immediately because Django's metaclass hasn't finished yet
+        try:
+            from django.apps import apps as apps_module
+            if not hasattr(apps_module, '_pending_rls_registrations'):
+                apps_module._pending_rls_registrations = []
+            apps_module._pending_rls_registrations.append(register)
+        except ImportError:
+            # Django not imported yet, skip
+            pass
 
     @classmethod
     def get_rls_policies(cls) -> List[RlsPolicy]:

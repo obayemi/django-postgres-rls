@@ -88,6 +88,17 @@ def auto_create_rls_roles(sender, app_config, verbosity, **kwargs):
         verbosity: Verbosity level (0-3)
         **kwargs: Additional keyword arguments
     """
+    # Process any pending RLS model registrations from __init_subclass__
+    from django.apps import apps
+    if hasattr(apps, '_pending_rls_registrations'):
+        for register_func in apps._pending_rls_registrations:
+            try:
+                register_func()
+            except Exception:
+                pass  # Ignore errors during auto-registration
+        # Clear the list
+        apps._pending_rls_registrations = []
+
     # Only run once per migrate command (not for every app)
     if hasattr(auto_create_rls_roles, '_processed'):
         return

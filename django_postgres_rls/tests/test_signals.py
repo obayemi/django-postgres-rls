@@ -144,6 +144,63 @@ class TestModelRegistration(TestCase):
         registered = get_registered_models()
         assert registered == []
 
+    def test_auto_registration_of_rls_model_subclasses(self):
+        """Test that RLSModel subclasses are automatically registered without @decorator."""
+        # Clear any pending registrations first
+        from django.apps import apps
+        if hasattr(apps, '_pending_rls_registrations'):
+            apps._pending_rls_registrations = []
+
+        # Create a model that inherits from RLSModel
+        # This should trigger __init_subclass__ and queue the model for registration
+        class TestAutoModel(RLSModel, models.Model):
+            rls_policies = [
+                RlsPolicy(role_name='app_user', using='true'),
+            ]
+
+            class Meta:
+                app_label = 'test_signals'
+                db_table = 'test_auto_model'
+
+        # Process pending registrations (simulating what happens in AppConfig.ready())
+        if hasattr(apps, '_pending_rls_registrations'):
+            for register_func in apps._pending_rls_registrations:
+                try:
+                    register_func()
+                except Exception:
+                    pass
+            apps._pending_rls_registrations = []
+
+        # Model should now be registered automatically
+        registered = get_registered_models()
+        assert TestAutoModel in registered
+
+    def test_auto_registration_ignores_abstract_models(self):
+        """Test that abstract RLSModel subclasses are not auto-registered."""
+        # Clear any pending registrations first
+        from django.apps import apps
+        if hasattr(apps, '_pending_rls_registrations'):
+            apps._pending_rls_registrations = []
+
+        # Create an abstract model
+        class AbstractTestModel(RLSModel, models.Model):
+            class Meta:
+                abstract = True
+                app_label = 'test_signals'
+
+        # Process pending registrations
+        if hasattr(apps, '_pending_rls_registrations'):
+            for register_func in apps._pending_rls_registrations:
+                try:
+                    register_func()
+                except Exception:
+                    pass
+            apps._pending_rls_registrations = []
+
+        # Abstract model should NOT be registered
+        registered = get_registered_models()
+        assert AbstractTestModel not in registered
+
 
 class TestAutoApplyRLSPolicies(TestCase):
     """Test auto_apply_rls_policies signal handler."""
