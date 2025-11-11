@@ -343,6 +343,9 @@ def apply_rls_policies(model: Type[models.Model], verbosity: int = 1) -> Tuple[i
 
         apply_rls_policies(MyModel, verbosity=2)
     """
+    from psycopg2 import sql
+    from .models import PolicyCommand
+
     table_name = model._meta.db_table
     policies_created = 0
     policies_skipped = 0
@@ -358,14 +361,14 @@ def apply_rls_policies(model: Type[models.Model], verbosity: int = 1) -> Tuple[i
         # Create policies
         policy_sql_statements = model.get_policy_sql()
 
-        for idx, sql in enumerate(policy_sql_statements):
+        for idx, sql_stmt in enumerate(policy_sql_statements):
             policy_name = f"{table_name}_policy_{idx}"
 
             try:
                 if verbosity >= 2:
                     print(f"Creating policy {policy_name}...")
 
-                cursor.execute(sql)
+                cursor.execute(sql_stmt)
                 policies_created += 1
 
                 if verbosity >= 1:
@@ -382,6 +385,62 @@ def apply_rls_policies(model: Type[models.Model], verbosity: int = 1) -> Tuple[i
                     if verbosity >= 1:
                         print(f"✗ Error creating policy {policy_name}: {e}")
                     raise
+
+        # Grant table-level permissions to roles
+        # RLS policies control which ROWS are visible, but roles still need
+        # table-level permissions to access the table at all
+        if verbosity >= 1:
+            print(f"Granting table permissions to roles...")
+
+        # Collect permissions needed for each role
+        role_permissions = {}  # role_name -> set of permissions
+        for policy in model.get_rls_policies():
+            role = policy.role_name
+            if not role:
+                continue  # Skip PUBLIC policies
+
+            if role not in role_permissions:
+                role_permissions[role] = set()
+
+            # Map PolicyCommand to table permissions
+            if policy.command == PolicyCommand.ALL:
+                role_permissions[role].update(['SELECT', 'INSERT', 'UPDATE', 'DELETE'])
+            elif policy.command == PolicyCommand.SELECT:
+                role_permissions[role].add('SELECT')
+            elif policy.command == PolicyCommand.INSERT:
+                role_permissions[role].add('INSERT')
+            elif policy.command == PolicyCommand.UPDATE:
+                role_permissions[role].add('UPDATE')
+            elif policy.command == PolicyCommand.DELETE:
+                role_permissions[role].add('DELETE')
+
+        # Grant permissions to each role
+        for role, permissions in role_permissions.items():
+            if not permissions:
+                continue
+
+            try:
+                perms_list = ', '.join(sorted(permissions))
+                grant_sql = sql.SQL("GRANT {permissions} ON TABLE {table} TO {role}").format(
+                    permissions=sql.SQL(perms_list),
+                    table=sql.Identifier(table_name),
+                    role=sql.Identifier(role)
+                )
+
+                if verbosity >= 2:
+                    print(f"Granting {perms_list} on {table_name} to {role}...")
+
+                cursor.execute(grant_sql)
+
+                if verbosity >= 1:
+                    print(f"✓ Granted {perms_list} on {table_name} to {role}")
+
+            except Exception as e:
+                if verbosity >= 1:
+                    print(f"✗ Error granting permissions to {role}: {e}")
+                # Don't fail if grants fail - might already be granted
+                # or role might not exist yet
+                pass
 
     return policies_created, policies_skipped
 
