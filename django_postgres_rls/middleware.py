@@ -289,11 +289,34 @@ class PostgresRLSMiddleware(MiddlewareMixin):
 
     Configuration:
         POSTGRES_RLS_ROLE_MAPPING (optional): Dict mapping role names to PostgreSQL roles
-            Default: {'user': 'app_user', 'staff': 'app_staff', 'superuser': 'app_superuser'}
+            Default: {
+                'user': 'app_user',
+                'staff': 'app_staff',
+                'superuser': 'app_superuser',
+                'anonymous': 'app_anonymous'
+            }
+
+        POSTGRES_RLS_DEFAULT_ANONYMOUS_ROLE (optional): Default role for unauthenticated users
+            Default: 'app_anonymous'
+            This role is used when:
+            - User is not authenticated
+            - extract_role() returns a role not in the mapping
+            - As a fallback for unknown roles
+
+        POSTGRES_RLS_WHITELIST (optional): List of URL paths that bypass RLS middleware
+            Default: [
+                '/api/auth/login/',
+                '/api/auth/register/',
+                '/api/auth/token/',
+                '/api-auth/login/',
+                '/admin/login/',
+            ]
+            Paths are matched using startswith(), so '/api/auth/login/' matches
+            '/api/auth/login/reset/' as well. Used primarily for authentication endpoints.
 
         POSTGRES_RLS_VALID_ROLES (optional): Frozenset or list of valid PostgreSQL roles
             If not provided, roles from POSTGRES_RLS_ROLE_MAPPING are used
-            Example: frozenset(['app_user', 'app_staff', 'app_superuser'])
+            Example: frozenset(['app_user', 'app_staff', 'app_superuser', 'app_anonymous'])
 
         POSTGRES_RLS_SESSION_UID_VARIABLE (optional): Session variable name for user ID
             Default: 'app.current_user_id'
@@ -336,8 +359,31 @@ class PostgresRLSMiddleware(MiddlewareMixin):
         self.role_mapping = getattr(settings, 'POSTGRES_RLS_ROLE_MAPPING', {
             'user': 'app_user',
             'staff': 'app_staff',
-            'superuser': 'app_superuser'
+            'superuser': 'app_superuser',
+            'anonymous': 'app_anonymous'  # Default for unauthenticated users
         })
+
+        # Load default anonymous role for unauthenticated users or fallback
+        default_anon = getattr(settings, 'POSTGRES_RLS_DEFAULT_ANONYMOUS_ROLE', 'app_anonymous')
+        # Handle MagicMock from tests
+        if isinstance(default_anon, str):
+            self.default_anonymous_role = default_anon
+        else:
+            self.default_anonymous_role = 'app_anonymous'
+
+        # Load RLS whitelist - endpoints that bypass RLS middleware
+        whitelist = getattr(settings, 'POSTGRES_RLS_WHITELIST', None)
+        # Handle MagicMock from tests
+        if isinstance(whitelist, (list, tuple)):
+            self.rls_whitelist = whitelist
+        else:
+            self.rls_whitelist = [
+                '/api/auth/login/',
+                '/api/auth/register/',
+                '/api/auth/token/',
+                '/api-auth/login/',
+                '/admin/login/',
+            ]
 
         # Load valid roles (whitelist)
         # Use hasattr to distinguish between "not set" and "set to empty"
@@ -346,7 +392,10 @@ class PostgresRLSMiddleware(MiddlewareMixin):
             self.valid_roles = frozenset(valid_roles_setting) if valid_roles_setting else frozenset()
         else:
             # Use roles from mapping as valid roles if not explicitly set
-            self.valid_roles = frozenset(self.role_mapping.values())
+            # Include the default anonymous role
+            mapped_roles = set(self.role_mapping.values())
+            mapped_roles.add(self.default_anonymous_role)
+            self.valid_roles = frozenset(mapped_roles)
 
         # Load session variable name
         self.session_uid_variable = getattr(
@@ -374,12 +423,13 @@ class PostgresRLSMiddleware(MiddlewareMixin):
                 "PostgreSQL RLS Configuration Error: POSTGRES_RLS_VALID_ROLES cannot be empty.\n\n"
                 "Please define valid PostgreSQL roles in your Django settings:\n\n"
                 "Example configuration:\n"
-                "  POSTGRES_RLS_VALID_ROLES = frozenset(['app_user', 'app_staff', 'app_superuser'])\n\n"
+                "  POSTGRES_RLS_VALID_ROLES = frozenset(['app_user', 'app_staff', 'app_superuser', 'app_anonymous'])\n\n"
                 "Or let the middleware infer from role mapping:\n"
                 "  POSTGRES_RLS_ROLE_MAPPING = {\n"
                 "      'user': 'app_user',\n"
                 "      'staff': 'app_staff',\n"
                 "      'superuser': 'app_superuser',\n"
+                "      'anonymous': 'app_anonymous',\n"
                 "  }\n\n"
                 "For security, only whitelisted roles can be used for role switching."
             )
@@ -394,6 +444,34 @@ class PostgresRLSMiddleware(MiddlewareMixin):
                     f"Please update your settings to only include valid role name strings:\n"
                     f"  POSTGRES_RLS_VALID_ROLES = frozenset(['app_user', 'app_staff'])"
                 )
+
+        # Validate default anonymous role
+        if not self.default_anonymous_role or not isinstance(self.default_anonymous_role, str):
+            raise ImproperlyConfigured(
+                f"PostgreSQL RLS Configuration Error: Invalid default anonymous role: {self.default_anonymous_role!r}\n\n"
+                f"The default anonymous role must be a non-empty string.\n\n"
+                f"Example configuration:\n"
+                f"  POSTGRES_RLS_DEFAULT_ANONYMOUS_ROLE = 'app_anonymous'\n\n"
+                f"This role is used for unauthenticated users and as a fallback."
+            )
+
+        # Ensure default anonymous role is in valid_roles
+        # If not present, add it automatically
+        if self.default_anonymous_role not in self.valid_roles:
+            logger.warning(
+                f"RLS: Default anonymous role '{self.default_anonymous_role}' not in POSTGRES_RLS_VALID_ROLES. "
+                f"Adding it automatically."
+            )
+            self.valid_roles = self.valid_roles | frozenset([self.default_anonymous_role])
+
+        # Validate RLS whitelist is a list
+        if not isinstance(self.rls_whitelist, (list, tuple)):
+            raise ImproperlyConfigured(
+                f"PostgreSQL RLS Configuration Error: POSTGRES_RLS_WHITELIST must be a list or tuple.\n\n"
+                f"Current value: {self.rls_whitelist!r}\n\n"
+                f"Example configuration:\n"
+                f"  POSTGRES_RLS_WHITELIST = ['/api/auth/login/', '/api/auth/register/']"
+            )
 
         # Validate session variable name format (schema.variable)
         if not self.session_uid_variable or '.' not in self.session_uid_variable:
@@ -647,6 +725,30 @@ class PostgresRLSMiddleware(MiddlewareMixin):
         """
         _execute_reset_role(cursor)
 
+    def _is_whitelisted_path(self, request):
+        """
+        Check if the request path is in the RLS whitelist.
+
+        Paths in the whitelist bypass RLS role switching entirely.
+
+        Args:
+            request: The Django HttpRequest object
+
+        Returns:
+            bool: True if the path is whitelisted, False otherwise
+        """
+        path = getattr(request, 'path', '')
+        if not path:
+            return False
+
+        # Check if path matches any whitelist entry (prefix match)
+        for whitelist_path in self.rls_whitelist:
+            if path.startswith(whitelist_path):
+                logger.debug(f"RLS: Path '{path}' is whitelisted (matched '{whitelist_path}')")
+                return True
+
+        return False
+
     def process_request(self, request):
         """
         Switch PostgreSQL role and set user ID before processing the request.
@@ -663,6 +765,11 @@ class PostgresRLSMiddleware(MiddlewareMixin):
             ValueError: If role validation fails
             ImproperlyConfigured: If configuration is invalid
         """
+        # Check if the request path is whitelisted (bypass RLS for auth endpoints)
+        if self._is_whitelisted_path(request):
+            logger.debug(f"RLS: Skipping role switching for whitelisted path: {request.path}")
+            return None
+
         # Get the role from the subclass implementation
         try:
             role = self.extract_role(request)
@@ -700,7 +807,8 @@ class PostgresRLSMiddleware(MiddlewareMixin):
             pg_role = role
         else:
             # Role came from middleware subclass - map it to PostgreSQL role
-            pg_role = self.role_mapping.get(role, 'app_user')  # Default to app_user
+            # Use default anonymous role as fallback instead of hardcoded 'app_user'
+            pg_role = self.role_mapping.get(role, self.default_anonymous_role)
 
         # Validate the role is in whitelist
         try:

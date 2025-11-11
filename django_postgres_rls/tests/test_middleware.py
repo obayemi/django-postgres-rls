@@ -68,7 +68,8 @@ class TestPostgresRLSMiddlewareBasics(TestCase):
         assert self.middleware.role_mapping == {
             'user': 'app_user',
             'staff': 'app_staff',
-            'superuser': 'app_superuser'
+            'superuser': 'app_superuser',
+            'anonymous': 'app_anonymous'
         }
 
     @patch('django.conf.settings')
@@ -497,7 +498,7 @@ class TestEdgeCases(TestCase):
         self.middleware = ConcreteRLSMiddleware(get_response=lambda r: HttpResponse())
 
     def test_process_request_with_unknown_role(self):
-        """Test process_request with unknown role falls back to default."""
+        """Test process_request with unknown role falls back to default anonymous role."""
 
         class UnknownRoleMiddleware(ConcreteRLSMiddleware):
             def extract_role(self, request):
@@ -513,9 +514,9 @@ class TestEdgeCases(TestCase):
 
             middleware.process_request(request)
 
-            # Should fall back to app_user
+            # Should fall back to app_anonymous (default anonymous role)
             calls = mock_cursor.execute.call_args_list
-            assert any('app_user' in str(call) for call in calls)
+            assert any('app_anonymous' in str(call) for call in calls)
 
     @patch('django_postgres_rls.middleware.connection')
     def test_process_request_with_string_user_id(self, mock_connection):
@@ -572,7 +573,8 @@ class TestRoleValidation(TestCase):
 
         # Should initialize successfully
         middleware = ConcreteRLSMiddleware(get_response=lambda r: HttpResponse())
-        assert middleware.valid_roles == frozenset(['app_user', 'app_staff', 'app_superuser'])
+        # Should include app_anonymous (default anonymous role) automatically
+        assert middleware.valid_roles == frozenset(['app_user', 'app_staff', 'app_superuser', 'app_anonymous'])
 
     @patch('django.conf.settings')
     def test_middleware_rejects_empty_valid_roles(self, mock_settings):
@@ -597,7 +599,8 @@ class TestRoleValidation(TestCase):
         delattr(mock_settings, 'POSTGRES_RLS_VALID_ROLES')
 
         middleware = ConcreteRLSMiddleware(get_response=lambda r: HttpResponse())
-        assert middleware.valid_roles == frozenset(['app_user', 'app_staff'])
+        # Should include app_anonymous (default anonymous role) automatically
+        assert middleware.valid_roles == frozenset(['app_user', 'app_staff', 'app_anonymous'])
 
     @patch('django.conf.settings')
     @patch('django_postgres_rls.middleware.connection')
@@ -1037,6 +1040,176 @@ class TestContextManager(TestCase):
             # Should not contain dangerous characters
             for call in set_config_calls:
                 assert ';' not in call or 'set_config' in call  # semicolon OK in set_config function name
+
+
+class TestPublicEndpointAccess(TestCase):
+    """Test that RLS middleware doesn't prevent access to public endpoints like login pages."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.factory = RequestFactory()
+
+    @patch('django_postgres_rls.middleware.connection')
+    def test_middleware_allows_unauthenticated_access(self, mock_connection):
+        """Test that middleware allows access for unauthenticated users (login page scenario)."""
+        mock_cursor = MagicMock()
+        mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_connection.in_atomic_block = True
+
+        middleware = ConcreteRLSMiddleware(get_response=lambda r: HttpResponse())
+
+        # Simulate unauthenticated user accessing login page (whitelisted path)
+        request = self.factory.get('/api/auth/login/')
+        request.user = AnonymousUser()
+
+        # Process request - should not raise an error
+        result = middleware.process_request(request)
+
+        # Should return None (allows request to continue)
+        assert result is None
+
+        # Verify NO role switching occurred because path is whitelisted
+        calls = [str(call) for call in mock_cursor.execute.call_args_list]
+        # Login page is in the default whitelist, so no RLS should be applied
+        assert len(calls) == 0  # No database calls should be made
+
+    @patch('django_postgres_rls.middleware.connection')
+    def test_middleware_switches_role_for_non_whitelisted_path(self, mock_connection):
+        """Test that middleware switches role for non-whitelisted paths."""
+        mock_cursor = MagicMock()
+        mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_connection.in_atomic_block = True
+
+        middleware = ConcreteRLSMiddleware(get_response=lambda r: HttpResponse())
+
+        # Simulate unauthenticated user accessing non-whitelisted path
+        request = self.factory.get('/api/buildings/')
+        request.user = AnonymousUser()
+
+        # Process request - should not raise an error
+        result = middleware.process_request(request)
+
+        # Should return None (allows request to continue)
+        assert result is None
+
+        # Verify role was switched
+        calls = [str(call) for call in mock_cursor.execute.call_args_list]
+        # ConcreteRLSMiddleware returns 'user' for unauthenticated, which maps to 'app_user'
+        assert any('app_user' in call for call in calls)
+
+    @patch('django_postgres_rls.middleware.connection')
+    def test_middleware_uses_anonymous_role_for_unmapped_role(self, mock_connection):
+        """Test that middleware uses default anonymous role for unmapped roles."""
+        mock_cursor = MagicMock()
+        mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_connection.in_atomic_block = True
+
+        # Create middleware that returns a role not in the mapping
+        class UnmappedRoleMiddleware(PostgresRLSMiddleware):
+            def extract_role(self, request):
+                return 'unknown_role'  # This role is not in default mapping
+
+        middleware = UnmappedRoleMiddleware(get_response=lambda r: HttpResponse())
+
+        request = self.factory.get('/api/buildings/')
+        request.user = Mock(is_authenticated=True, id=123)
+
+        # Process request
+        result = middleware.process_request(request)
+
+        # Should return None (allows request to continue)
+        assert result is None
+
+        # Verify role was switched to default anonymous role
+        calls = [str(call) for call in mock_cursor.execute.call_args_list]
+        # unknown_role is not in mapping, so it falls back to app_anonymous
+        assert any('app_anonymous' in call for call in calls)
+
+    @patch('django_postgres_rls.middleware.connection')
+    def test_middleware_allows_no_user_attribute(self, mock_connection):
+        """Test that middleware handles requests without user attribute (edge case)."""
+        mock_cursor = MagicMock()
+        mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_connection.in_atomic_block = True
+
+        middleware = ConcreteRLSMiddleware(get_response=lambda r: HttpResponse())
+
+        # Request without user attribute
+        request = self.factory.get('/api/auth/login/')
+        # Don't set request.user at all
+
+        # Process request - should not raise an error
+        result = middleware.process_request(request)
+
+        # Should return None (allows request to continue)
+        assert result is None
+
+    @patch('django_postgres_rls.middleware.connection')
+    def test_middleware_with_none_role_skips_role_switching(self, mock_connection):
+        """Test that middleware skips role switching when extract_role returns None."""
+        mock_cursor = MagicMock()
+        mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_connection.in_atomic_block = True
+
+        class PublicEndpointMiddleware(PostgresRLSMiddleware):
+            """Middleware that returns None for public endpoints."""
+
+            def extract_role(self, request):
+                # Return None for public endpoints to skip RLS
+                public_paths = ['/api/auth/login/', '/api/auth/register/']
+                if any(request.path.startswith(path) for path in public_paths):
+                    return None
+
+                # Normal role extraction for other paths
+                if not request.user or not request.user.is_authenticated:
+                    return 'user'
+                return 'user'
+
+        middleware = PublicEndpointMiddleware(get_response=lambda r: HttpResponse())
+
+        # Request to login page
+        request = self.factory.get('/api/auth/login/')
+        request.user = AnonymousUser()
+
+        # Process request
+        result = middleware.process_request(request)
+
+        # Should return None (allows request to continue)
+        assert result is None
+
+        # Verify NO role switching occurred
+        mock_cursor.execute.assert_not_called()
+
+    @patch('django_postgres_rls.middleware.connection')
+    def test_full_request_cycle_for_login_page(self, mock_connection):
+        """Test full request/response cycle for login page access."""
+        mock_cursor = MagicMock()
+        mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_connection.in_atomic_block = False
+
+        # Mock the pg_roles query
+        def mock_fetchall():
+            last_call = mock_cursor.execute.call_args
+            if last_call and 'pg_roles' in str(last_call):
+                return [('app_user',), ('app_staff',), ('app_superuser',)]
+            return []
+
+        mock_cursor.fetchall.side_effect = mock_fetchall
+
+        middleware = ConcreteRLSMiddleware(
+            get_response=lambda r: HttpResponse("Login Page")
+        )
+
+        # Simulate unauthenticated user accessing login page
+        request = self.factory.get('/api/auth/login/')
+        request.user = AnonymousUser()
+
+        # Process full request/response cycle
+        response = middleware(request)
+
+        # Should successfully return the response
+        assert response is not None
+        assert response.content.decode() == "Login Page"
 
 
 class TestRlsUserMixin(TestCase):

@@ -453,3 +453,199 @@ class TestMiddlewareErrorHandling:
             reset_role()
             current_role = get_current_role()
             assert current_role != 'app_staff'
+
+
+class TestPublicEndpointAccess:
+    """Test that RLS middleware doesn't block access to public endpoints like login pages."""
+
+    def test_anonymous_user_can_access_through_middleware(self, postgres_db, postgres_test_roles):
+        """Test that anonymous users can access endpoints through the middleware (login page scenario)."""
+        middleware = DemoRLSMiddleware()
+
+        # Simulate anonymous user accessing login page (whitelisted path)
+        request = Mock(spec=HttpRequest)
+        request.user = AnonymousUser()
+        request.path = '/api/auth/login/'
+
+        # Get initial role
+        initial_role = get_current_role()
+
+        # Process request within transaction
+        with transaction.atomic():
+            # Should not raise an error
+            result = middleware.process_request(request)
+
+            # Should return None (allows request to continue)
+            assert result is None
+
+            # Role should NOT be switched because path is whitelisted
+            current_role = get_current_role()
+            assert current_role == initial_role  # No role change
+
+            # Process response
+            response = HttpResponse("Login Page")
+            returned_response = middleware.process_response(request, response)
+
+            # Should return the response
+            assert returned_response == response
+
+        # Cleanup
+        reset_role()
+
+    def test_anonymous_user_accessing_non_whitelisted_endpoint(self, postgres_db, postgres_test_roles):
+        """Test that anonymous users get role switching for non-whitelisted endpoints."""
+        middleware = DemoRLSMiddleware()
+
+        # Simulate anonymous user accessing non-whitelisted endpoint
+        request = Mock(spec=HttpRequest)
+        request.user = AnonymousUser()
+        request.path = '/api/buildings/'
+
+        # Process request within transaction
+        with transaction.atomic():
+            # Should not raise an error
+            result = middleware.process_request(request)
+
+            # Should return None (allows request to continue)
+            assert result is None
+
+            # Role should be switched to app_user
+            current_role = get_current_role()
+            assert current_role == 'app_user'
+
+        # Cleanup
+        reset_role()
+
+    def test_public_endpoint_middleware_skips_rls_for_login(self, postgres_db, postgres_test_roles):
+        """Test middleware that skips RLS for public endpoints like login."""
+
+        class PublicEndpointMiddleware(PostgresRLSMiddleware):
+            """Middleware that skips RLS for public endpoints."""
+
+            def extract_role(self, request):
+                # Skip RLS for public endpoints
+                public_paths = ['/api/auth/login/', '/api/auth/register/', '/api-auth/login/']
+                if hasattr(request, 'path') and any(
+                    request.path.startswith(path) for path in public_paths
+                ):
+                    return None
+
+                # Normal role extraction for other paths
+                if not request.user or not request.user.is_authenticated:
+                    return 'user'
+                if request.user.is_superuser:
+                    return 'superuser'
+                elif request.user.is_staff:
+                    return 'staff'
+                return 'user'
+
+        middleware = PublicEndpointMiddleware(get_response=lambda r: HttpResponse())
+
+        # Request to login page
+        request = Mock(spec=HttpRequest)
+        request.user = AnonymousUser()
+        request.path = '/api/auth/login/'
+
+        initial_role = get_current_role()
+
+        # Process request within transaction
+        with transaction.atomic():
+            # Should not raise an error
+            result = middleware.process_request(request)
+
+            # Should return None (allows request to continue)
+            assert result is None
+
+            # Role should NOT be changed (RLS skipped)
+            current_role = get_current_role()
+            assert current_role == initial_role
+
+        # Cleanup
+        reset_role()
+
+    def test_authenticated_endpoint_still_enforces_rls(self, postgres_db, postgres_test_roles):
+        """Test that authenticated endpoints still enforce RLS after login."""
+
+        class PublicEndpointMiddleware(PostgresRLSMiddleware):
+            """Middleware that skips RLS only for public endpoints."""
+
+            def extract_role(self, request):
+                # Skip RLS for public endpoints
+                public_paths = ['/api/auth/login/', '/api/auth/register/']
+                if hasattr(request, 'path') and any(
+                    request.path.startswith(path) for path in public_paths
+                ):
+                    return None
+
+                # Enforce RLS for authenticated endpoints
+                if not request.user or not request.user.is_authenticated:
+                    return 'user'
+                if request.user.is_superuser:
+                    return 'superuser'
+                elif request.user.is_staff:
+                    return 'staff'
+                return 'user'
+
+        middleware = PublicEndpointMiddleware(get_response=lambda r: HttpResponse())
+
+        # Request to protected endpoint (not login)
+        request = Mock(spec=HttpRequest)
+        request.user = Mock()
+        request.user.is_authenticated = True
+        request.user.is_staff = True
+        request.user.is_superuser = False
+        request.user.id = 123
+        request.path = '/api/buildings/'
+
+        # Process request within transaction
+        with transaction.atomic():
+            # Should enforce RLS
+            result = middleware.process_request(request)
+
+            # Should return None (allows request to continue)
+            assert result is None
+
+            # Role should be switched to app_staff
+            current_role = get_current_role()
+            assert current_role == 'app_staff'
+
+        # Cleanup
+        reset_role()
+
+    def test_full_login_flow_with_rls(self, postgres_db, postgres_test_roles):
+        """Test full login flow: anonymous access to login, then authenticated access."""
+        middleware = DemoRLSMiddleware()
+
+        # Step 1: Anonymous user accesses login page (whitelisted)
+        login_request = Mock(spec=HttpRequest)
+        login_request.user = AnonymousUser()
+        login_request.path = '/api/auth/login/'
+
+        initial_role = get_current_role()
+
+        with transaction.atomic():
+            middleware.process_request(login_request)
+            # Login path is whitelisted, so no role switch
+            assert get_current_role() == initial_role
+            middleware.process_response(login_request, HttpResponse("Login Page"))
+
+        reset_role()
+
+        # Step 2: After login, user accesses protected resource
+        protected_request = Mock(spec=HttpRequest)
+        protected_request.user = Mock()
+        protected_request.user.is_authenticated = True
+        protected_request.user.is_staff = False
+        protected_request.user.is_superuser = False
+        protected_request.user.id = 456
+        protected_request.path = '/api/buildings/'
+
+        with transaction.atomic():
+            middleware.process_request(protected_request)
+            # Should be in app_user role
+            assert get_current_role() == 'app_user'
+            # Should have user_id set
+            user_id = get_session_variable('app.current_user_id')
+            assert user_id == '456'
+
+        reset_role()
