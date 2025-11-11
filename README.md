@@ -1021,18 +1021,20 @@ The package includes a comprehensive test suite with **234 tests** covering all 
 **Option 1: Using Testcontainers (Recommended)**
 
 ```bash
-# Install test dependencies
-pip install pytest pytest-django testcontainers
+# With uv (recommended)
+uv sync  # Install all dependencies including test deps
+uv run pytest django_postgres_rls/tests/ -v
 
-# Run all tests - PostgreSQL container starts automatically
+# Or with pip
+pip install pytest pytest-django testcontainers
 pytest django_postgres_rls/tests/ -v
 ```
 
 **Option 2: Using Existing PostgreSQL**
 
 ```bash
-# Install test dependencies
-pip install pytest pytest-django
+# With uv (recommended)
+uv sync  # Install all dependencies
 
 # Set environment variables
 export USE_EXISTING_POSTGRES=1
@@ -1046,6 +1048,10 @@ export POSTGRES_DB=test_rls
 createdb test_rls
 
 # Run all tests
+uv run pytest django_postgres_rls/tests/ -v
+
+# Or with pip
+pip install pytest pytest-django
 pytest django_postgres_rls/tests/ -v
 ```
 
@@ -1329,11 +1335,56 @@ MIT License - see LICENSE file for details
 Contributions are welcome! Please feel free to submit a Pull Request.
 
 For development:
-1. Fork the repository
-2. Install development dependencies: `pip install -e ".[dev]"`
-3. Run tests: `pytest`
-4. Ensure all tests pass before submitting PR
-5. Add tests for new functionality
+
+### Setup with uv (Recommended)
+
+```bash
+# 1. Fork and clone the repository
+git clone https://github.com/obayemi/django-postgres-rls.git
+cd django-postgres-rls
+
+# 2. Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 3. Sync dependencies (creates venv and installs all deps)
+uv sync
+
+# 4. Run tests
+uv run pytest
+
+# 5. Run specific test file
+uv run pytest django_postgres_rls/tests/test_models.py -v
+
+# 6. Run tests with coverage
+uv run pytest --cov=django_postgres_rls --cov-report=html
+
+# 7. Run linting and formatting
+uv run ruff check .
+uv run black --check .
+
+# 8. Format code
+uv run black .
+
+# 9. Run tox for multi-version testing
+uv run tox
+```
+
+### Setup with pip (Alternative)
+
+```bash
+# 1. Fork and clone the repository
+# 2. Install development dependencies
+pip install -e ".[dev]"
+
+# 3. Run tests
+pytest
+```
+
+**Before submitting a PR:**
+1. Ensure all tests pass: `uv run pytest`
+2. Add tests for new functionality
+3. Format code: `uv run black .`
+4. Check linting: `uv run ruff check .`
 
 ## Credits
 

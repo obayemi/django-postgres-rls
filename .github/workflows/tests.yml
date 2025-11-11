@@ -20,19 +20,21 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        enable-cache: true
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
 
     - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pytest pytest-django psycopg2-binary "Django>=5.2,<5.3"
+      run: uv sync
 
     - name: Run tests
-      run: |
-        pytest django_postgres_rls/tests/ -v --tb=short
+      run: uv run pytest django_postgres_rls/tests/ -v --tb=short
 
   integration-tests:
     name: Integration Tests (PostgreSQL ${{ matrix.postgres-version }})
@@ -63,15 +65,18 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        enable-cache: true
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
 
     - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pytest pytest-django psycopg2-binary "Django>=5.2,<5.3"
+      run: uv sync
 
     - name: Run integration tests
       env:
@@ -81,8 +86,7 @@ jobs:
         POSTGRES_USER: postgres
         POSTGRES_PASSWORD: postgres
         POSTGRES_DB: test_rls
-      run: |
-        pytest django_postgres_rls/tests/ -v -m integration --tb=short
+      run: uv run pytest django_postgres_rls/tests/ -v -m integration --tb=short
 
   coverage:
     name: Coverage
@@ -91,19 +95,21 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Install uv
+      uses: astral-sh/setup-uv@v4
+      with:
+        enable-cache: true
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.13'
 
     - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pytest pytest-django pytest-cov psycopg2-binary "Django>=5.2,<5.3"
+      run: uv sync
 
     - name: Run tests with coverage
-      run: |
-        pytest django_postgres_rls/tests/ --cov=django_postgres_rls --cov-report=xml --cov-report=term-missing
+      run: uv run pytest django_postgres_rls/tests/ --cov=django_postgres_rls --cov-report=xml --cov-report=term-missing
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v4

@@ -20,6 +20,10 @@ htmlcov/
 env/
 venv/
 
+# uv - Python package manager
+# Note: uv.lock should be COMMITTED for reproducible builds
+# .python-version should be COMMITTED for team consistency
+
 # IDE
 .vscode/
 .idea/
