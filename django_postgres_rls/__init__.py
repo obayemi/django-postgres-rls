@@ -73,12 +73,33 @@ def __getattr__(name):
     elif name == "CurrentUserId":
         from .expressions import CurrentUserId
         return CurrentUserId
+    elif name == "RLSAuthenticationBackend":
+        from .backends import RLSAuthenticationBackend
+        return RLSAuthenticationBackend
+    elif name == "RLSAuthenticationBackendWithPythonVerification":
+        from .backends import RLSAuthenticationBackendWithPythonVerification
+        return RLSAuthenticationBackendWithPythonVerification
+    elif name == "get_auth_function_sql":
+        from .backends import get_auth_function_sql
+        return get_auth_function_sql
+    elif name == "get_auth_function_sql_with_password_check":
+        from .backends import get_auth_function_sql_with_password_check
+        return get_auth_function_sql_with_password_check
+    elif name == "get_user_fetch_function_sql":
+        from .backends import get_user_fetch_function_sql
+        return get_user_fetch_function_sql
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     # Middleware
     "PostgresRLSMiddleware",
     "rls_role",
+    # Authentication backends
+    "RLSAuthenticationBackend",
+    "RLSAuthenticationBackendWithPythonVerification",
+    "get_auth_function_sql",
+    "get_auth_function_sql_with_password_check",
+    "get_user_fetch_function_sql",
     # Models
     "RLSModel",
     "RlsUser",

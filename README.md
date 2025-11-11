@@ -33,6 +33,7 @@ This library has received significant improvements to enhance security, reliabil
 
 ### ✅ Automatic Role Creation (NEW)
 - Roles are automatically created when running `python manage.py migrate`
+- Requires `django_postgres_rls` in `INSTALLED_APPS` to register signal handlers
 - Enabled by default for best developer experience (opt-out via `POSTGRES_RLS_AUTO_CREATE_ROLES = False`)
 - Creates roles with `NOLOGIN` and grants them to the current database user
 - Idempotent - safe to run multiple times, skips existing roles
@@ -81,7 +82,7 @@ uv add django-postgres-rls
 
 **Automatic Role Creation (Recommended)**
 
-By default, roles are automatically created when you run `python manage.py migrate`. Simply configure your roles in settings (step 3) and they will be created automatically with the correct permissions.
+By default, roles are automatically created when you run `python manage.py migrate`. Simply add `django_postgres_rls` to `INSTALLED_APPS` and configure your roles in `POSTGRES_RLS_VALID_ROLES` (step 3), and roles will be created automatically with the correct permissions.
 
 **Manual Role Creation (Advanced)**
 
@@ -146,10 +147,20 @@ class MyRLSMiddleware(PostgresRLSMiddleware):
 
 ### 3. Add to Django Settings
 
-Add your middleware to `MIDDLEWARE` in your Django settings, **after** authentication middleware:
+Configure Django with the required settings:
 
 ```python
 # settings.py
+
+# REQUIRED: Add django_postgres_rls to INSTALLED_APPS
+# This registers signal handlers for automatic role creation and policy application
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    # ...
+    'django_postgres_rls',  # Required for automatic role creation
+    # ... your other apps
+]
 
 # IMPORTANT: Enable ATOMIC_REQUESTS for best practices
 DATABASES = {
@@ -187,6 +198,7 @@ MIDDLEWARE = [
 ```
 
 **Important Configuration Notes:**
+- **`django_postgres_rls` must be in `INSTALLED_APPS`** - This is required for automatic role creation and policy application to work
 - `ATOMIC_REQUESTS = True` is **recommended** for best practices - the middleware will automatically create transactions if needed to ensure role changes are properly scoped
 - `POSTGRES_RLS_VALID_ROLES` is **required** for security - it prevents SQL injection by whitelisting valid roles
 - The middleware must come **after** `AuthenticationMiddleware` in the `MIDDLEWARE` list
@@ -310,7 +322,9 @@ class Document(RLSModel, models.Model):
         rls_policies = [...]
 ```
 
-Then ensure the signal handler is loaded by importing it in your app's `apps.py`:
+**Signal handlers are automatically registered** when you add `django_postgres_rls` to `INSTALLED_APPS` (step 3). No additional configuration needed!
+
+**Alternative**: If you prefer not to add `django_postgres_rls` to `INSTALLED_APPS`, you can manually register signal handlers in your app's `apps.py`:
 
 ```python
 # myapp/apps.py
@@ -322,7 +336,7 @@ class MyAppConfig(AppConfig):
     name = 'myapp'
 
     def ready(self):
-        # Import to register signal handlers
+        # Only needed if django_postgres_rls is NOT in INSTALLED_APPS
         from django_postgres_rls import signals  # noqa
 ```
 

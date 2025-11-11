@@ -17,7 +17,9 @@ class DjangoPostgresRLSConfig(AppConfig):
         """
         Called when the app is ready.
 
-        Imports system checks to register them with Django.
+        Imports system checks and signal handlers to register them with Django.
         """
         # Import checks to register them
         from . import checks  # noqa: F401
+        # Import signals to register pre_migrate/post_migrate handlers
+        from . import signals  # noqa: F401
