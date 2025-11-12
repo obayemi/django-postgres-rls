@@ -395,7 +395,8 @@ AUTHENTICATION_BACKENDS = [
 
 # RLS Authentication Settings
 POSTGRES_RLS_AUTH_FUNCTION = 'public.get_user_for_auth'
-POSTGRES_RLS_AUTH_USE_EMAIL = False  # Set to True for email-based auth
+# Note: The backend automatically uses the USERNAME_FIELD from your User model,
+# so it works seamlessly with both username and email-based authentication.
 ```
 
 **Step 3: Apply Migrations**

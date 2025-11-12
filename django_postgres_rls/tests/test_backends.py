@@ -29,17 +29,16 @@ class TestRLSAuthenticationBackend(TestCase):
     def test_backend_initialization(self):
         """Test that backend initializes with correct defaults."""
         assert self.backend.auth_function == 'public.authenticate_user'
-        assert self.backend.use_email is False
+        assert self.backend.username_field == User.USERNAME_FIELD
 
     @patch('django.conf.settings')
     def test_backend_initialization_with_custom_settings(self, mock_settings):
         """Test backend initialization with custom settings."""
         mock_settings.POSTGRES_RLS_AUTH_FUNCTION = 'custom.auth_func'
-        mock_settings.POSTGRES_RLS_AUTH_USE_EMAIL = True
 
         backend = RLSAuthenticationBackend()
         assert backend.auth_function == 'custom.auth_func'
-        assert backend.use_email is True
+        assert backend.username_field == User.USERNAME_FIELD
 
     @patch('django_postgres_rls.backends.connection')
     def test_authenticate_with_valid_credentials(self, mock_connection):
@@ -133,15 +132,9 @@ class TestRLSAuthenticationBackend(TestCase):
 
         assert authenticated_user is None
 
-    @patch('django.conf.settings')
     @patch('django_postgres_rls.backends.connection')
-    def test_authenticate_with_email(self, mock_connection, mock_settings):
-        """Test authentication using email instead of username."""
-        mock_settings.POSTGRES_RLS_AUTH_USE_EMAIL = True
-
-        # Create backend with email auth
-        backend = RLSAuthenticationBackend()
-
+    def test_authenticate_with_username_field_kwarg(self, mock_connection):
+        """Test authentication using USERNAME_FIELD as kwarg."""
         # Create a test user
         user = User.objects.create_user(
             username='testuser',
@@ -156,16 +149,16 @@ class TestRLSAuthenticationBackend(TestCase):
 
         request = self.factory.get('/')
 
-        # Authenticate with email
-        authenticated_user = backend.authenticate(
+        # Authenticate with USERNAME_FIELD as kwarg
+        # The backend should accept the identifier via the USERNAME_FIELD name
+        authenticated_user = self.backend.authenticate(
             request,
-            email='test@example.com',
-            password='testpass'
+            **{User.USERNAME_FIELD: 'testuser', 'password': 'testpass'}
         )
 
         # Verify
         assert authenticated_user is not None
-        assert authenticated_user.email == 'test@example.com'
+        assert authenticated_user.username == 'testuser'
 
     def test_get_user(self):
         """Test get_user method."""
@@ -196,7 +189,7 @@ class TestRLSAuthenticationBackendWithPythonVerification(TestCase):
     def test_backend_initialization(self):
         """Test that backend initializes with correct defaults."""
         assert self.backend.auth_function == 'public.get_user_for_auth'
-        assert self.backend.use_email is False
+        assert self.backend.username_field == User.USERNAME_FIELD
 
     @patch('django_postgres_rls.backends.connection')
     def test_authenticate_with_valid_credentials(self, mock_connection):

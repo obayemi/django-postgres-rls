@@ -69,8 +69,9 @@ class RLSAuthenticationBackend(BaseBackend):
         POSTGRES_RLS_AUTH_FUNCTION (optional): Name of the authentication function
             Default: 'public.authenticate_user'
 
-        POSTGRES_RLS_AUTH_USE_EMAIL (optional): Use email instead of username
-            Default: False
+    Note:
+        The backend automatically uses the USERNAME_FIELD from your User model,
+        so it works seamlessly with both username and email-based authentication.
     """
 
     def __init__(self):
@@ -84,41 +85,30 @@ class RLSAuthenticationBackend(BaseBackend):
             'public.authenticate_user'
         )
 
-        # Check if we should use email instead of username
-        self.use_email = getattr(
-            settings,
-            'POSTGRES_RLS_AUTH_USE_EMAIL',
-            False
-        )
-
         # Get User model
         self.User = get_user_model()
 
-    def authenticate(self, request, username=None, password=None, email=None, **kwargs):
+        # Get the username field from the User model
+        self.username_field = self.User.USERNAME_FIELD
+
+    def authenticate(self, request, username=None, password=None, **kwargs):
         """
         Authenticate user using SECURITY DEFINER function.
 
         Args:
             request: The Django HttpRequest object
-            username: Username to authenticate (if not using email)
+            username: The username (or email if USERNAME_FIELD is 'email')
             password: User's password
-            email: Email to authenticate (if using email-based auth)
-            **kwargs: Additional keyword arguments
+            **kwargs: Additional keyword arguments (may contain the USERNAME_FIELD value)
 
         Returns:
             User object if authentication succeeds, None otherwise
         """
-        # Determine the identifier (username or email)
-        if self.use_email:
-            identifier = email or username
-            if not identifier:
-                return None
-        else:
-            identifier = username
-            if not identifier:
-                return None
+        # Get the identifier based on USERNAME_FIELD
+        # First check if it's passed as a kwarg with the USERNAME_FIELD name
+        identifier = kwargs.get(self.username_field, username)
 
-        if not password:
+        if not identifier or not password:
             return None
 
         try:
@@ -405,23 +395,31 @@ class RLSAuthenticationBackendWithPythonVerification(BaseBackend):
             'public.get_user_for_auth'
         )
 
-        self.use_email = getattr(
-            settings,
-            'POSTGRES_RLS_AUTH_USE_EMAIL',
-            False
-        )
-
         self.User = get_user_model()
 
-    def authenticate(self, request, username=None, password=None, email=None, **kwargs):
+        # Get the username field from the User model
+        self.username_field = self.User.USERNAME_FIELD
+
+    def authenticate(self, request, username=None, password=None, **kwargs):
         """
         Authenticate user by fetching from SECURITY DEFINER function,
         then verifying password in Python.
+
+        Args:
+            request: The Django HttpRequest object
+            username: The username (or email if USERNAME_FIELD is 'email')
+            password: User's password
+            **kwargs: Additional keyword arguments (may contain the USERNAME_FIELD value)
+
+        Returns:
+            User object if authentication succeeds, None otherwise
         """
         from django.contrib.auth.hashers import check_password
 
-        # Determine identifier
-        identifier = email or username if self.use_email else username
+        # Get the identifier based on USERNAME_FIELD
+        # First check if it's passed as a kwarg with the USERNAME_FIELD name
+        identifier = kwargs.get(self.username_field, username)
+
         if not identifier or not password:
             return None
 

@@ -274,7 +274,7 @@ AUTHENTICATION_BACKENDS = [
 
 # RLS authentication settings
 POSTGRES_RLS_AUTH_FUNCTION = 'public.get_user_for_auth'  # Name of SECURITY DEFINER function
-POSTGRES_RLS_AUTH_USE_EMAIL = False  # Set to True to use email instead of username
+# Note: The backend automatically uses the USERNAME_FIELD from your User model
 
 # RLS middleware settings
 POSTGRES_RLS_DEFAULT_ANONYMOUS_ROLE = 'app_anonymous'
