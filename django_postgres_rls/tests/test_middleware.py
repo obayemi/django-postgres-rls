@@ -1403,3 +1403,105 @@ class TestRlsUserMixin(TestCase):
         calls = [str(call) for call in mock_cursor.execute.call_args_list]
         set_role_calls = [call for call in calls if 'SET' in call and 'ROLE' in call]
         assert len(set_role_calls) == 0
+
+    @patch('django.conf.settings')
+    @patch('django_postgres_rls.middleware.connection')
+    def test_rls_user_with_django_abstractuser(self, mock_connection, mock_settings):
+        """Test RlsUser with Django's AbstractUser (real-world scenario)."""
+        from django.contrib.auth.models import AbstractUser
+        from django_postgres_rls import RlsUser
+
+        # Simulate real User model that inherits from AbstractUser + RlsUser
+        class RealUser(RlsUser, AbstractUser):
+            class Meta:
+                app_label = 'test'
+
+            def get_postgres_role(self):
+                if self.is_superuser:
+                    return 'app_superuser'
+                return 'app_user'
+
+        mock_settings.POSTGRES_RLS_VALID_ROLES = ['app_user', 'app_superuser']
+        mock_settings.POSTGRES_RLS_ROLE_MAPPING = {}
+        mock_settings.POSTGRES_RLS_SESSION_UID_VARIABLE = 'app.current_user_id'
+        mock_settings.POSTGRES_RLS_ENABLE_AUDIT_LOG = False
+
+        mock_cursor = MagicMock()
+        mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_connection.in_atomic_block = True
+
+        from django_postgres_rls import PostgresRLSMiddleware
+        middleware = PostgresRLSMiddleware(get_response=lambda r: HttpResponse())
+
+        # Create user instances
+        regular_user = RealUser(username='regular', is_superuser=False)
+        regular_user.id = 123
+        super_user = RealUser(username='super', is_superuser=True)
+        super_user.id = 456
+
+        # Test regular user
+        request = self.factory.get('/')
+        request.user = regular_user
+        middleware.process_request(request)
+
+        calls = [str(call) for call in mock_cursor.execute.call_args_list]
+        assert any('app_user' in call for call in calls), \
+            f"Expected 'app_user' in role switch, got: {calls}"
+
+        # Reset mock
+        mock_cursor.reset_mock()
+
+        # Test superuser
+        request.user = super_user
+        middleware.process_request(request)
+
+        calls = [str(call) for call in mock_cursor.execute.call_args_list]
+        assert any('app_superuser' in call for call in calls), \
+            f"Expected 'app_superuser' in role switch, got: {calls}"
+
+    @patch('django.conf.settings')
+    @patch('django_postgres_rls.middleware.connection')
+    def test_rls_user_with_simplelazy_proxy(self, mock_connection, mock_settings):
+        """Test RlsUser wrapped in SimpleLazyObject (Django's lazy user loading)."""
+        from django.contrib.auth.models import AbstractUser
+        from django.utils.functional import SimpleLazyObject
+        from django_postgres_rls import RlsUser
+
+        class RealUser(RlsUser, AbstractUser):
+            class Meta:
+                app_label = 'test'
+
+            def get_postgres_role(self):
+                return 'app_user'
+
+        mock_settings.POSTGRES_RLS_VALID_ROLES = ['app_user', 'app_anonymous']
+        mock_settings.POSTGRES_RLS_ROLE_MAPPING = {'anonymous': 'app_anonymous'}
+        mock_settings.POSTGRES_RLS_DEFAULT_ANONYMOUS_ROLE = 'app_anonymous'
+        mock_settings.POSTGRES_RLS_SESSION_UID_VARIABLE = 'app.current_user_id'
+        mock_settings.POSTGRES_RLS_ENABLE_AUDIT_LOG = False
+
+        mock_cursor = MagicMock()
+        mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
+        mock_connection.in_atomic_block = True
+
+        from django_postgres_rls import PostgresRLSMiddleware
+        middleware = PostgresRLSMiddleware(get_response=lambda r: HttpResponse())
+
+        # Create user wrapped in SimpleLazyObject (like Django does in requests)
+        user = RealUser(username='testuser')
+        user.id = 123
+        lazy_user = SimpleLazyObject(lambda: user)
+
+        request = self.factory.get('/')
+        request.user = lazy_user
+
+        # Process request
+        middleware.process_request(request)
+
+        # Verify that app_user was used, NOT app_anonymous
+        calls = [str(call) for call in mock_cursor.execute.call_args_list]
+        assert any('app_user' in call for call in calls), \
+            f"Expected 'app_user' from RlsUser.get_postgres_role(), but got app_anonymous. Calls: {calls}"
+        # Explicitly check that app_anonymous was NOT used
+        assert not any('app_anonymous' in call for call in calls), \
+            f"Should NOT use app_anonymous when RlsUser.get_postgres_role() returns app_user. Calls: {calls}"

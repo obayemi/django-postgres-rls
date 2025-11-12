@@ -794,12 +794,30 @@ class PostgresRLSMiddleware(MiddlewareMixin):
         # We check if get_postgres_role is actually defined (not just from Mock.__getattr__)
         user_has_get_postgres_role = False
         if hasattr(request, 'user') and request.user:
-            # Check if get_postgres_role is actually defined on the user class or instance
-            # (not just available via Mock's __getattr__)
-            user_class = type(request.user)
-            user_has_get_postgres_role = (
-                'get_postgres_role' in dir(user_class) or
-                ('get_postgres_role' in request.user.__dict__ if hasattr(request.user, '__dict__') else False)
+            user_obj = request.user
+
+            # Handle Django's SimpleLazyObject and other proxy objects
+            # Force lazy evaluation by accessing any attribute (is_authenticated is always safe)
+            if hasattr(user_obj, '_wrapped'):
+                try:
+                    # This triggers lazy evaluation for SimpleLazyObject
+                    _ = user_obj.is_authenticated
+                except (AttributeError, TypeError):
+                    pass
+
+            # Get the actual user class (unwrap SimpleLazyObject if needed)
+            if hasattr(user_obj, '_wrapped') and hasattr(user_obj.__dict__.get('_wrapped'), '__class__'):
+                # SimpleLazyObject that has been evaluated
+                actual_class = type(user_obj._wrapped)
+            else:
+                # Regular object or unevaluated lazy object
+                actual_class = type(user_obj)
+
+            # Check if get_postgres_role is defined in the class hierarchy
+            # This works correctly with Django's AbstractUser and RlsUser mixin
+            user_has_get_postgres_role = any(
+                'get_postgres_role' in getattr(cls, '__dict__', {})
+                for cls in actual_class.__mro__
             )
 
         if user_has_get_postgres_role:

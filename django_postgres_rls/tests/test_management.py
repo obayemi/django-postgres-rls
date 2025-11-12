@@ -353,6 +353,7 @@ class TestApplyRLSPolicies(TestCase):
     def test_apply_rls_policies_handles_existing(self, mock_connection):
         """Test handling of already existing policies."""
         mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = ('public',)  # Schema name query result
         mock_connection.cursor.return_value.__enter__.return_value = mock_cursor
 
         # Simulate policy already exists error
@@ -361,6 +362,11 @@ class TestApplyRLSPolicies(TestCase):
             None,  # FORCE RLS
             Exception("already exists"),  # First policy
             None,  # Second policy
+            None,  # Schema name query
+            None,  # GRANT USAGE on schema for first role
+            None,  # GRANT table permissions for first role
+            None,  # GRANT USAGE on schema for second role
+            None,  # GRANT table permissions for second role
         ]
 
         created, skipped = apply_rls_policies(self.TestModel, verbosity=0)

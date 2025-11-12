@@ -5,8 +5,9 @@ This module provides utilities for generating migration code and managing
 RLS policies programmatically.
 """
 
-from typing import List, Type, Optional, Tuple
-from django.db import models, connection
+from typing import List, Optional, Tuple, Type
+
+from django.db import connection, models
 from django.db.migrations.operations.base import Operation
 
 
@@ -15,7 +16,7 @@ def generate_rls_migration_operations(
     enable_rls: bool = True,
     force_rls: bool = True,
     create_policies: bool = True,
-    reverse: bool = True
+    reverse: bool = True,
 ) -> List[Operation]:
     """
     Generate Django migration operations for enabling RLS and creating policies.
@@ -56,16 +57,20 @@ def generate_rls_migration_operations(
 
         if enable_rls:
             sql_parts.append(f"ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY;")
-            reverse_sql_parts.append(f"ALTER TABLE {table_name} DISABLE ROW LEVEL SECURITY;")
+            reverse_sql_parts.append(
+                f"ALTER TABLE {table_name} DISABLE ROW LEVEL SECURITY;"
+            )
 
         if force_rls:
             sql_parts.append(f"ALTER TABLE {table_name} FORCE ROW LEVEL SECURITY;")
-            reverse_sql_parts.append(f"ALTER TABLE {table_name} NO FORCE ROW LEVEL SECURITY;")
+            reverse_sql_parts.append(
+                f"ALTER TABLE {table_name} NO FORCE ROW LEVEL SECURITY;"
+            )
 
         operations.append(
             migrations.RunSQL(
                 sql="\n".join(sql_parts),
-                reverse_sql="\n".join(reverse_sql_parts) if reverse else None
+                reverse_sql="\n".join(reverse_sql_parts) if reverse else None,
             )
         )
 
@@ -83,12 +88,14 @@ def generate_rls_migration_operations(
             # Generate reverse SQL (DROP POLICY)
             reverse_sql_parts = []
             for policy_name in policy_names:
-                reverse_sql_parts.append(f"DROP POLICY IF EXISTS {policy_name} ON {table_name};")
+                reverse_sql_parts.append(
+                    f"DROP POLICY IF EXISTS {policy_name} ON {table_name};"
+                )
 
             operations.append(
                 migrations.RunSQL(
                     sql="\n\n".join(policy_sql_statements),
-                    reverse_sql="\n".join(reverse_sql_parts) if reverse else None
+                    reverse_sql="\n".join(reverse_sql_parts) if reverse else None,
                 )
             )
 
@@ -100,7 +107,7 @@ def generate_rls_migration_code(
     enable_rls: bool = True,
     force_rls: bool = True,
     create_policies: bool = True,
-    reverse: bool = True
+    reverse: bool = True,
 ) -> str:
     """
     Generate migration code as a string for copying into a migration file.
@@ -149,11 +156,15 @@ def generate_rls_migration_code(
 
         if enable_rls:
             sql_parts.append(f"ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY;")
-            reverse_sql_parts.append(f"ALTER TABLE {table_name} DISABLE ROW LEVEL SECURITY;")
+            reverse_sql_parts.append(
+                f"ALTER TABLE {table_name} DISABLE ROW LEVEL SECURITY;"
+            )
 
         if force_rls:
             sql_parts.append(f"ALTER TABLE {table_name} FORCE ROW LEVEL SECURITY;")
-            reverse_sql_parts.append(f"ALTER TABLE {table_name} NO FORCE ROW LEVEL SECURITY;")
+            reverse_sql_parts.append(
+                f"ALTER TABLE {table_name} NO FORCE ROW LEVEL SECURITY;"
+            )
 
         lines.append("        migrations.RunSQL(")
         lines.append('            sql="""')
@@ -186,7 +197,9 @@ def generate_rls_migration_code(
                 lines.append('            reverse_sql="""')
                 for idx in range(len(model.get_rls_policies())):
                     policy_name = f"{table_name}_policy_{idx}"
-                    lines.append(f"            DROP POLICY IF EXISTS {policy_name} ON {table_name};")
+                    lines.append(
+                        f"            DROP POLICY IF EXISTS {policy_name} ON {table_name};"
+                    )
                 lines.append('            """')
 
             lines.append("        ),")
@@ -322,7 +335,9 @@ class EnableRLSOperation(Operation):
         return f"Enable RLS{force_text} on {self.app_label}.{self.model_name}"
 
 
-def apply_rls_policies(model: Type[models.Model], verbosity: int = 1) -> Tuple[int, int]:
+def apply_rls_policies(
+    model: Type[models.Model], verbosity: int = 1
+) -> Tuple[int, int]:
     """
     Apply RLS policies for a model to the database.
 
@@ -344,6 +359,7 @@ def apply_rls_policies(model: Type[models.Model], verbosity: int = 1) -> Tuple[i
         apply_rls_policies(MyModel, verbosity=2)
     """
     from psycopg2 import sql
+
     from .models import PolicyCommand
 
     table_name = model._meta.db_table
@@ -386,11 +402,22 @@ def apply_rls_policies(model: Type[models.Model], verbosity: int = 1) -> Tuple[i
                         print(f"✗ Error creating policy {policy_name}: {e}")
                     raise
 
-        # Grant table-level permissions to roles
-        # RLS policies control which ROWS are visible, but roles still need
-        # table-level permissions to access the table at all
+        # Grant schema USAGE and table-level permissions to roles
+        # RLS policies control which ROWS are visible, but roles still need:
+        # 1. USAGE on the schema (to access objects in the schema)
+        # 2. Table-level permissions (to perform operations on the table)
         if verbosity >= 1:
-            print(f"Granting table permissions to roles...")
+            print(f"Granting schema and table permissions to roles...")
+
+        # Get the schema name for the table (defaults to 'public' for Django)
+        cursor.execute("""
+            SELECT table_schema
+            FROM information_schema.tables
+            WHERE table_name = %s
+            LIMIT 1
+        """, [table_name])
+        result = cursor.fetchone()
+        schema_name = result[0] if result else 'public'
 
         # Collect permissions needed for each role
         role_permissions = {}  # role_name -> set of permissions
@@ -404,40 +431,66 @@ def apply_rls_policies(model: Type[models.Model], verbosity: int = 1) -> Tuple[i
 
             # Map PolicyCommand to table permissions
             if policy.command == PolicyCommand.ALL:
-                role_permissions[role].update(['SELECT', 'INSERT', 'UPDATE', 'DELETE'])
+                role_permissions[role].update(["SELECT", "INSERT", "UPDATE", "DELETE"])
             elif policy.command == PolicyCommand.SELECT:
-                role_permissions[role].add('SELECT')
+                role_permissions[role].add("SELECT")
             elif policy.command == PolicyCommand.INSERT:
-                role_permissions[role].add('INSERT')
+                role_permissions[role].add("INSERT")
             elif policy.command == PolicyCommand.UPDATE:
-                role_permissions[role].add('UPDATE')
+                role_permissions[role].add("UPDATE")
             elif policy.command == PolicyCommand.DELETE:
-                role_permissions[role].add('DELETE')
+                role_permissions[role].add("DELETE")
 
-        # Grant permissions to each role
+        # Grant schema USAGE and table permissions to each role
         for role, permissions in role_permissions.items():
+            # First, grant USAGE on the schema
+            try:
+                schema_grant_sql = sql.SQL(
+                    "GRANT USAGE ON SCHEMA {schema} TO {role}"
+                ).format(
+                    schema=sql.Identifier(schema_name),
+                    role=sql.Identifier(role),
+                )
+
+                if verbosity >= 2:
+                    print(f"Granting USAGE on schema {schema_name} to {role}...")
+
+                cursor.execute(schema_grant_sql)
+
+                if verbosity >= 1:
+                    print(f"✓ Granted USAGE on schema {schema_name} to {role}")
+
+            except Exception as e:
+                if verbosity >= 1:
+                    print(f"✗ Error granting schema USAGE to {role}: {e}")
+                # Don't fail if grants fail - might already be granted
+                pass
+
+            # Then, grant table-level permissions
             if not permissions:
                 continue
 
             try:
-                perms_list = ', '.join(sorted(permissions))
-                grant_sql = sql.SQL("GRANT {permissions} ON TABLE {table} TO {role}").format(
+                perms_list = ", ".join(sorted(permissions))
+                table_grant_sql = sql.SQL(
+                    "GRANT {permissions} ON TABLE {table} TO {role}"
+                ).format(
                     permissions=sql.SQL(perms_list),
                     table=sql.Identifier(table_name),
-                    role=sql.Identifier(role)
+                    role=sql.Identifier(role),
                 )
 
                 if verbosity >= 2:
                     print(f"Granting {perms_list} on {table_name} to {role}...")
 
-                cursor.execute(grant_sql)
+                cursor.execute(table_grant_sql)
 
                 if verbosity >= 1:
                     print(f"✓ Granted {perms_list} on {table_name} to {role}")
 
             except Exception as e:
                 if verbosity >= 1:
-                    print(f"✗ Error granting permissions to {role}: {e}")
+                    print(f"✗ Error granting table permissions to {role}: {e}")
                 # Don't fail if grants fail - might already be granted
                 # or role might not exist yet
                 pass

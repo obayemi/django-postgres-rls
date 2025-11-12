@@ -71,6 +71,29 @@ def verify_role_has_privilege(table_name: str, role: str, privilege: str) -> boo
     return privilege.upper() in privilege_types
 
 
+def verify_role_has_schema_usage(role: str, schema_name: str = 'public') -> bool:
+    """
+    Verify that a role has USAGE privilege on a schema.
+
+    Uses PostgreSQL's has_schema_privilege() function to check if a role
+    has USAGE permission on a schema.
+
+    Args:
+        role: Role name
+        schema_name: Schema name (defaults to 'public')
+
+    Returns:
+        True if the role has USAGE on the schema, False otherwise
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT has_schema_privilege(%s, %s, 'USAGE')",
+            [role, schema_name]
+        )
+        result = cursor.fetchone()
+        return result[0] if result else False
+
+
 @pytest.fixture
 def test_table():
     """Create a test table for grant testing."""
@@ -427,6 +450,96 @@ class TestAutoRegistrationWithGrants:
 
         # Cleanup
         _rls_model_registry.clear()
+
+
+class TestSchemaUsageGrants:
+    """Test that schema USAGE permission is granted along with table permissions."""
+
+    def test_grants_schema_usage_for_select_policy(self, postgres_db, test_table, test_roles):
+        """Test that USAGE on schema is granted for SELECT policy."""
+        class TestModel(RLSModel, models.Model):
+            rls_policies = [
+                RlsPolicy(
+                    role_name='app_user',
+                    command=PolicyCommand.SELECT,
+                    using='true'
+                ),
+            ]
+
+            class Meta:
+                app_label = 'test_grants'
+                db_table = test_table
+
+        # Apply RLS policies (should grant both schema USAGE and table SELECT)
+        created, skipped = apply_rls_policies(TestModel, verbosity=2)
+
+        # Verify schema USAGE was granted
+        assert verify_role_has_schema_usage('app_user'), \
+            "app_user should have USAGE privilege on schema"
+
+        # Verify table permission was also granted
+        assert verify_role_has_privilege(test_table, 'app_user', 'SELECT'), \
+            "app_user should have SELECT privilege on table"
+
+    def test_grants_schema_usage_for_multiple_roles(self, postgres_db, test_table, test_roles):
+        """Test that USAGE is granted to all roles with policies."""
+        class TestModel(RLSModel, models.Model):
+            rls_policies = [
+                RlsPolicy(
+                    role_name='app_user',
+                    command=PolicyCommand.SELECT,
+                    using='true'
+                ),
+                RlsPolicy(
+                    role_name='app_staff',
+                    command=PolicyCommand.ALL,
+                    using='true'
+                ),
+                RlsPolicy(
+                    role_name='app_superuser',
+                    command=PolicyCommand.INSERT,
+                    with_check='true'
+                ),
+            ]
+
+            class Meta:
+                app_label = 'test_grants'
+                db_table = test_table
+
+        apply_rls_policies(TestModel, verbosity=2)
+
+        # Verify all three roles have schema USAGE
+        assert verify_role_has_schema_usage('app_user'), \
+            "app_user should have USAGE on schema"
+        assert verify_role_has_schema_usage('app_staff'), \
+            "app_staff should have USAGE on schema"
+        assert verify_role_has_schema_usage('app_superuser'), \
+            "app_superuser should have USAGE on schema"
+
+    def test_no_schema_usage_for_public_policy(self, postgres_db, test_table, test_roles):
+        """Test that PUBLIC policies don't grant schema USAGE to specific roles."""
+        class TestModel(RLSModel, models.Model):
+            rls_policies = [
+                RlsPolicy(
+                    role_name=None,  # PUBLIC policy
+                    command=PolicyCommand.SELECT,
+                    using='true'
+                ),
+            ]
+
+            class Meta:
+                app_label = 'test_grants'
+                db_table = test_table
+
+        apply_rls_policies(TestModel, verbosity=2)
+
+        # Verify app_user doesn't get schema USAGE from PUBLIC policy
+        # (Note: app_user might have USAGE from other tests if not properly isolated,
+        #  but it shouldn't get it from this PUBLIC policy)
+        # We can't easily test this in isolation, so we'll just verify no table grants
+        grants = get_table_grants(test_table, 'app_user')
+        assert len(grants) == 0, \
+            "PUBLIC policy should not create grants to specific roles"
 
 
 class TestGrantsWithRealUsage:

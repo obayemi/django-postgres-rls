@@ -10,6 +10,7 @@ A Django middleware package for implementing PostgreSQL Row-Level Security using
 - **Startup Role Validation**: Validates configured roles exist in PostgreSQL on first request
 - **Declarative Policy Definition**: Define RLS policies in your Django models using the `RLSModel` mixin
 - **Session Variable Expressions**: Django F-like expressions (`SessionVar`, `CurrentUserId`) for clean, type-safe policy definitions
+- **Django Expression Support**: Full support for `Q` objects, `Exists` subqueries, `Value`, `F`, and other Django expressions in policies
 - **Many-to-Many Support**: `RlsManyToManyField` automatically applies RLS policies to through tables
 - **Migration Generation**: Automatically generate migration code for RLS policies
 - **Auto-Apply on Migrate**: Optionally apply RLS policies automatically after migrations
@@ -189,7 +190,7 @@ Use the `RLSModel` mixin to define RLS policies declaratively:
 ```python
 # myapp/models.py
 from django.db import models
-from django.db.models import Q
+from django.db.models import Q, F, Exists, Value
 from django_postgres_rls import RLSModel, RlsPolicy, PolicyCommand, CurrentUserId
 
 
@@ -224,6 +225,47 @@ class Document(RLSModel, models.Model):
                 role_name='app_staff',
                 command=PolicyCommand.ALL,
                 using='true'
+            ),
+        ]
+
+
+# Example with Exists subquery for advanced permission checking
+class DocumentPermission(models.Model):
+    document_id = models.IntegerField()
+    user_id = models.IntegerField()
+    can_read = models.BooleanField(default=False)
+    can_write = models.BooleanField(default=False)
+
+
+class SecureDocument(RLSModel, models.Model):
+    title = models.CharField(max_length=200)
+    owner_id = models.IntegerField()
+
+    class Meta:
+        rls_policies = [
+            # Users can only see documents they own or have explicit read permissions
+            RlsPolicy(
+                role_name='app_user',
+                command=PolicyCommand.SELECT,
+                using=Q(owner_id=CurrentUserId()) | Exists(
+                    DocumentPermission.objects.filter(
+                        document_id=F('id'),
+                        user_id=CurrentUserId(),
+                        can_read=True
+                    )
+                )
+            ),
+            # Users can only update documents they own or have write permissions
+            RlsPolicy(
+                role_name='app_user',
+                command=PolicyCommand.UPDATE,
+                using=Q(owner_id=CurrentUserId()) | Exists(
+                    DocumentPermission.objects.filter(
+                        document_id=F('id'),
+                        user_id=CurrentUserId(),
+                        can_write=True
+                    )
+                )
             ),
         ]
 ```
@@ -407,7 +449,7 @@ The `RlsPolicy` dataclass defines a PostgreSQL RLS policy with the following par
 
 - **`role_name`**: (Required) PostgreSQL role name (e.g., `'app_user'`, `'app_staff'`)
 - **`using`**: (Required) USING clause expression
-  - Can be a Django `Q` object or raw SQL string
+  - Can be a Django `Q` object, Django `Expression` (e.g., `Exists`, `Value`, `F`), or raw SQL string
   - Defines which rows are visible/accessible
 - **`command`**: (Optional) Policy command
   - Defaults to `PolicyCommand.ALL`
@@ -417,7 +459,7 @@ The `RlsPolicy` dataclass defines a PostgreSQL RLS policy with the following par
   - RESTRICTIVE: Row must pass ALL restrictive policies (AND logic)
   - PERMISSIVE: Row must pass AT LEAST ONE permissive policy (OR logic)
 - **`with_check`**: (Optional) WITH CHECK clause expression
-  - Can be a Django `Q` object or raw SQL string
+  - Can be a Django `Q` object, Django `Expression` (e.g., `Exists`, `Value`, `F`), or raw SQL string
   - Defines which rows can be inserted/updated
   - If not specified, `using` expression is used
 
@@ -425,7 +467,7 @@ The `RlsPolicy` dataclass defines a PostgreSQL RLS policy with the following par
 
 ```python
 from django_postgres_rls import RlsPolicy, PolicyCommand, PolicyMode, CurrentUserId, SessionVar
-from django.db.models import Q, CharField
+from django.db.models import Q, F, Exists, Value, CharField
 
 # Simple owner-based policy (using CurrentUserId)
 RlsPolicy(
@@ -439,6 +481,52 @@ RlsPolicy(
     role_name='app_user',
     command=PolicyCommand.SELECT,
     using=Q(is_public=True) | Q(owner_id=CurrentUserId())
+)
+
+# Using Exists subquery to check permissions table
+RlsPolicy(
+    role_name='app_user',
+    command=PolicyCommand.SELECT,
+    using=Exists(
+        Permission.objects.filter(
+            user_id=CurrentUserId(),
+            resource_id=F('id'),
+            can_read=True
+        )
+    )
+)
+
+# Using Exists for complex access control
+RlsPolicy(
+    role_name='app_user',
+    command=PolicyCommand.UPDATE,
+    using=Exists(
+        TeamMembership.objects.filter(
+            team_id=F('team_id'),
+            user_id=CurrentUserId(),
+            role__in=['admin', 'editor']
+        )
+    )
+)
+
+# Using Value expression for simple boolean policies
+RlsPolicy(
+    role_name='app_admin',
+    command=PolicyCommand.ALL,
+    using=Value(True)  # Admins can access everything
+)
+
+# Combining Q objects and Exists
+RlsPolicy(
+    role_name='app_user',
+    command=PolicyCommand.SELECT,
+    using=Q(is_public=True) | Exists(
+        Subscription.objects.filter(
+            user_id=CurrentUserId(),
+            content_id=F('id'),
+            is_active=True
+        )
+    )
 )
 
 # Different USING and WITH CHECK
@@ -1008,7 +1096,7 @@ The library provides three main components:
 
 ### Policy SQL Generation
 
-Django Q objects are automatically converted to PostgreSQL SQL:
+Django Q objects and Expression objects are automatically converted to PostgreSQL SQL:
 
 ```python
 # Django Q object
@@ -1016,12 +1104,35 @@ Q(is_public=True) | Q(owner_id=CurrentUserId())
 
 # Generated SQL
 (is_public = true OR owner_id = current_setting('app.current_user_id', false)::integer)
+
+# Django Exists subquery
+Exists(
+    Permission.objects.filter(
+        user_id=CurrentUserId(),
+        resource_id=F('id'),
+        can_read=True
+    )
+)
+
+# Generated SQL
+EXISTS (
+    SELECT 1 FROM permission
+    WHERE user_id = current_setting('app.current_user_id', false)::integer
+    AND resource_id = table.id
+    AND can_read = true
+)
+
+# Django Value expression
+Value(True)
+
+# Generated SQL
+true
 ```
 
 ## Testing
 
-The package includes a comprehensive test suite with **234 tests** covering all functionality:
-- **189 unit tests**: Fast, mocked database operations using PostgreSQL configuration
+The package includes a comprehensive test suite with **242 tests** covering all functionality:
+- **197 unit tests**: Fast, mocked database operations using PostgreSQL configuration
 - **45 integration tests**: Real PostgreSQL database tests with actual RLS policies
 
 **All tests use PostgreSQL** - the library is PostgreSQL-only by design.

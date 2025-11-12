@@ -11,7 +11,7 @@ Tests cover:
 
 import pytest
 from django.db import models
-from django.db.models import Q, F
+from django.db.models import Q, F, Exists, Value
 from django.test import TestCase
 
 from django_postgres_rls import (
@@ -481,3 +481,170 @@ class TestPolicyEdgeCases(TestCase):
         assert 'FOR SELECT' in sql
         assert 'TO app_user' in sql
         assert 'USING (true)' in sql
+
+
+class TestExpressionObjects(TestCase):
+    """Test RlsPolicy with Django Expression objects (Exists, Value, etc.)."""
+
+    def setUp(self):
+        """Create test model classes."""
+        class RelatedModel(RLSModel, models.Model):
+            owner_id = models.IntegerField()
+
+            class Meta:
+                app_label = 'test_models'
+                db_table = 'test_related'
+
+        class TestModel(RLSModel, models.Model):
+            name = models.CharField(max_length=100)
+            owner_id = models.IntegerField()
+            is_active = models.BooleanField(default=True)
+
+            class Meta:
+                app_label = 'test_models'
+                db_table = 'test_expressions'
+
+        self.TestModel = TestModel
+        self.RelatedModel = RelatedModel
+
+    def test_policy_with_exists(self):
+        """Test creating policy with Exists subquery."""
+        exists_subquery = Exists(
+            self.RelatedModel.objects.filter(owner_id=F('owner_id'))
+        )
+
+        policy = RlsPolicy(
+            role_name='app_user',
+            command=PolicyCommand.SELECT,
+            using=exists_subquery
+        )
+
+        assert policy.using == exists_subquery
+        assert isinstance(policy.using, Exists)
+
+    def test_policy_with_value(self):
+        """Test creating policy with Value expression."""
+        value_expr = Value(True)
+
+        policy = RlsPolicy(
+            role_name='app_user',
+            command=PolicyCommand.SELECT,
+            using=value_expr
+        )
+
+        assert policy.using == value_expr
+        assert isinstance(policy.using, Value)
+
+    def test_get_policy_sql_with_exists(self):
+        """Test get_policy_sql generates correct SQL for Exists."""
+        class TestModelWithExists(RLSModel, models.Model):
+            name = models.CharField(max_length=100)
+            owner_id = models.IntegerField()
+
+            rls_policies = [
+                RlsPolicy(
+                    role_name='app_user',
+                    command=PolicyCommand.SELECT,
+                    using=Exists(
+                        self.RelatedModel.objects.filter(owner_id=F('owner_id'))
+                    )
+                ),
+            ]
+
+            class Meta:
+                app_label = 'test_models'
+                db_table = 'test_exists_policy'
+
+        sql_statements = TestModelWithExists.get_policy_sql()
+        assert len(sql_statements) == 1
+
+        sql = sql_statements[0]
+        assert 'CREATE POLICY' in sql
+        assert 'ON test_exists_policy' in sql
+        assert 'FOR SELECT' in sql
+        assert 'TO app_user' in sql
+        assert 'USING' in sql
+        assert 'EXISTS' in sql.upper()
+
+    def test_get_policy_sql_with_value(self):
+        """Test get_policy_sql generates correct SQL for Value."""
+        class TestModelWithValue(RLSModel, models.Model):
+            name = models.CharField(max_length=100)
+
+            rls_policies = [
+                RlsPolicy(
+                    role_name='app_user',
+                    command=PolicyCommand.SELECT,
+                    using=Value(True)
+                ),
+            ]
+
+            class Meta:
+                app_label = 'test_models'
+                db_table = 'test_value_policy'
+
+        sql_statements = TestModelWithValue.get_policy_sql()
+        assert len(sql_statements) == 1
+
+        sql = sql_statements[0]
+        assert 'CREATE POLICY' in sql
+        assert 'ON test_value_policy' in sql
+        assert 'FOR SELECT' in sql
+        assert 'TO app_user' in sql
+        assert 'USING' in sql
+        # Value(True) should generate something like 'true' or '1'
+        assert 'true' in sql.lower() or '1' in sql
+
+    def test_policy_with_exists_and_with_check(self):
+        """Test policy with Exists in both using and with_check."""
+        exists_subquery = Exists(
+            self.RelatedModel.objects.filter(owner_id=F('owner_id'))
+        )
+
+        policy = RlsPolicy(
+            role_name='app_user',
+            command=PolicyCommand.INSERT,
+            using=Value(True),
+            with_check=exists_subquery
+        )
+
+        assert isinstance(policy.using, Value)
+        assert isinstance(policy.with_check, Exists)
+
+    def test_expression_to_sql_exists(self):
+        """Test _expression_to_sql method with Exists."""
+        exists_expr = Exists(
+            self.RelatedModel.objects.filter(owner_id=1)
+        )
+
+        sql = self.TestModel._expression_to_sql(exists_expr)
+
+        # Should contain EXISTS and reference to the related table
+        assert 'EXISTS' in sql.upper()
+        assert 'test_related' in sql.lower()
+
+    def test_expression_to_sql_value(self):
+        """Test _expression_to_sql method with Value."""
+        value_expr = Value(True)
+
+        sql = self.TestModel._expression_to_sql(value_expr)
+
+        # Should contain the boolean value
+        assert 'true' in sql.lower() or '1' in sql
+
+    def test_combined_q_and_exists(self):
+        """Test policy can accept different expression types for using vs with_check."""
+        q_obj = Q(is_active=True)
+        exists_subquery = Exists(
+            self.RelatedModel.objects.filter(owner_id=F('owner_id'))
+        )
+
+        policy = RlsPolicy(
+            role_name='app_user',
+            command=PolicyCommand.UPDATE,
+            using=q_obj,
+            with_check=exists_subquery
+        )
+
+        assert isinstance(policy.using, Q)
+        assert isinstance(policy.with_check, Exists)

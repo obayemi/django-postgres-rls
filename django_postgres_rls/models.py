@@ -8,7 +8,8 @@ declaratively in Django model Meta classes.
 from dataclasses import dataclass
 from typing import Optional, Union, List
 from django.db import models
-from django.db.models import Q
+from django.db.models import Q, Exists, Value
+from django.db.models.expressions import Expression
 
 
 class RlsUser:
@@ -95,6 +96,7 @@ class RlsPolicy:
             Defaults to PolicyCommand.ALL.
         using: USING clause expression. Can be either:
             - A Django Q object (will be converted to SQL WHERE clause)
+            - A Django Expression (Exists, Value, F, etc.)
             - A raw SQL string expression
             This defines which rows are visible/accessible.
         name: Custom policy name (optional). If not specified, a name will be
@@ -104,6 +106,7 @@ class RlsPolicy:
             - PERMISSIVE: Row must pass at least one PERMISSIVE policy
         with_check: WITH CHECK clause expression (optional). Can be either:
             - A Django Q object (will be converted to SQL WHERE clause)
+            - A Django Expression (Exists, Value, F, etc.)
             - A raw SQL string expression
             This defines which rows can be inserted/updated.
             If not specified, the USING expression is used.
@@ -123,12 +126,12 @@ class RlsPolicy:
             with_check="owner_id = current_setting('app.current_user_id')::int"
         )
     """
-    using: Optional[Union[Q, str]] = None
+    using: Optional[Union[Q, Expression, str]] = None
     role_name: Optional[str] = None
     command: str = PolicyCommand.ALL
     name: Optional[str] = None
     mode: Optional[str] = None
-    with_check: Optional[Union[Q, str]] = None
+    with_check: Optional[Union[Q, Expression, str]] = None
 
     def __post_init__(self):
         """Validate policy configuration."""
@@ -326,6 +329,39 @@ class RLSModel(models.Model):
         return sql
 
     @classmethod
+    def _expression_to_sql(cls, expression: Expression) -> str:
+        """
+        Convert a Django Expression object to SQL.
+
+        This handles Exists, Value, F, and other Expression subclasses.
+
+        Args:
+            expression: Django Expression object to convert
+
+        Returns:
+            str: SQL expression
+        """
+        from django.db.models.sql import Query
+
+        # Create a query for this model
+        query = Query(cls)
+
+        # Get the SQL compiler
+        compiler = query.get_compiler(using='default')
+
+        # Compile the expression to SQL
+        sql, params = expression.as_sql(compiler, compiler.connection)
+
+        # Replace %s placeholders with actual values
+        if params:
+            sql = sql % tuple(
+                f"'{p}'" if isinstance(p, str) else str(p)
+                for p in params
+            )
+
+        return sql
+
+    @classmethod
     def get_policy_sql(cls, policy_name_prefix: Optional[str] = None) -> List[str]:
         """
         Generate SQL statements for creating RLS policies defined on this model.
@@ -378,6 +414,8 @@ class RLSModel(models.Model):
             if policy.using:
                 if isinstance(policy.using, Q):
                     using_sql = cls._q_to_sql(policy.using)
+                elif isinstance(policy.using, Expression):
+                    using_sql = cls._expression_to_sql(policy.using)
                 else:
                     using_sql = policy.using
                 sql_parts.append(f"USING ({using_sql})")
@@ -386,6 +424,8 @@ class RLSModel(models.Model):
             if policy.with_check:
                 if isinstance(policy.with_check, Q):
                     with_check_sql = cls._q_to_sql(policy.with_check)
+                elif isinstance(policy.with_check, Expression):
+                    with_check_sql = cls._expression_to_sql(policy.with_check)
                 else:
                     with_check_sql = policy.with_check
                 sql_parts.append(f"WITH CHECK ({with_check_sql})")
