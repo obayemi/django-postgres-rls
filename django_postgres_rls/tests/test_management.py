@@ -317,7 +317,7 @@ class TestApplyRLSPolicies(TestCase):
 
         self.TestModel = TestModel
 
-    @patch('django_postgres_rls.management.connection')
+    @patch('django_postgres_rls.management_utils.connection')
     def test_apply_rls_policies_basic(self, mock_connection):
         """Test basic policy application."""
         mock_cursor = MagicMock()
@@ -336,7 +336,7 @@ class TestApplyRLSPolicies(TestCase):
         # Check for CREATE POLICY commands
         assert any('CREATE POLICY' in arg for arg in call_args)
 
-    @patch('django_postgres_rls.management.connection')
+    @patch('django_postgres_rls.management_utils.connection')
     def test_apply_rls_policies_returns_counts(self, mock_connection):
         """Test that apply_rls_policies returns correct counts."""
         mock_cursor = MagicMock()
@@ -349,7 +349,7 @@ class TestApplyRLSPolicies(TestCase):
         assert created >= 0
         assert skipped >= 0
 
-    @patch('django_postgres_rls.management.connection')
+    @patch('django_postgres_rls.management_utils.connection')
     def test_apply_rls_policies_handles_existing(self, mock_connection):
         """Test handling of already existing policies."""
         mock_cursor = MagicMock()
@@ -367,7 +367,7 @@ class TestApplyRLSPolicies(TestCase):
 
         assert skipped >= 0
 
-    @patch('django_postgres_rls.management.connection')
+    @patch('django_postgres_rls.management_utils.connection')
     def test_apply_rls_policies_verbosity(self, mock_connection):
         """Test different verbosity levels."""
         mock_cursor = MagicMock()
@@ -397,7 +397,7 @@ class TestDropRLSPolicies(TestCase):
 
         self.TestModel = TestModel
 
-    @patch('django_postgres_rls.management.connection')
+    @patch('django_postgres_rls.management_utils.connection')
     def test_drop_rls_policies_basic(self, mock_connection):
         """Test basic policy dropping."""
         mock_cursor = MagicMock()
@@ -414,7 +414,7 @@ class TestDropRLSPolicies(TestCase):
         assert any('test_model_policy_0' in arg for arg in call_args)
         assert any('test_model_policy_1' in arg for arg in call_args)
 
-    @patch('django_postgres_rls.management.connection')
+    @patch('django_postgres_rls.management_utils.connection')
     def test_drop_rls_policies_returns_count(self, mock_connection):
         """Test that drop_rls_policies returns correct count."""
         mock_cursor = MagicMock()
@@ -425,7 +425,7 @@ class TestDropRLSPolicies(TestCase):
         assert isinstance(dropped, int)
         assert dropped >= 0
 
-    @patch('django_postgres_rls.management.connection')
+    @patch('django_postgres_rls.management_utils.connection')
     def test_drop_rls_policies_verbosity(self, mock_connection):
         """Test different verbosity levels."""
         mock_cursor = MagicMock()
@@ -435,7 +435,7 @@ class TestDropRLSPolicies(TestCase):
         for verbosity in [0, 1, 2]:
             drop_rls_policies(self.TestModel, verbosity=verbosity)
 
-    @patch('django_postgres_rls.management.connection')
+    @patch('django_postgres_rls.management_utils.connection')
     def test_drop_rls_policies_with_if_exists(self, mock_connection):
         """Test that DROP POLICY uses IF EXISTS."""
         mock_cursor = MagicMock()
@@ -478,7 +478,7 @@ class TestEdgeCases(TestCase):
         code = generate_rls_migration_code(TestModel)
         assert 'class Migration' in code
 
-    @patch('django_postgres_rls.management.connection')
+    @patch('django_postgres_rls.management_utils.connection')
     def test_apply_empty_policies(self, mock_connection):
         """Test applying policies for model with no policies."""
         class TestModel(RLSModel, models.Model):

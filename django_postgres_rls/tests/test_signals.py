@@ -215,7 +215,7 @@ class TestAutoApplyRLSPolicies(TestCase):
         from django_postgres_rls.signals import _rls_model_registry
         _rls_model_registry.clear()
 
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     def test_auto_apply_no_registered_models(self, mock_apply):
         """Test signal handler with no registered models."""
         mock_app_config = Mock(spec=AppConfig)
@@ -230,7 +230,7 @@ class TestAutoApplyRLSPolicies(TestCase):
         # Should not call apply_rls_policies
         mock_apply.assert_not_called()
 
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     def test_auto_apply_with_registered_model(self, mock_apply):
         """Test signal handler with registered model."""
         class TestModel(RLSModel, models.Model):
@@ -258,7 +258,7 @@ class TestAutoApplyRLSPolicies(TestCase):
         # Should call apply_rls_policies for the model
         mock_apply.assert_called_once_with(TestModel, verbosity=1)
 
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     def test_auto_apply_different_app(self, mock_apply):
         """Test signal handler with model from different app."""
         class TestModel(RLSModel, models.Model):
@@ -283,7 +283,7 @@ class TestAutoApplyRLSPolicies(TestCase):
         # Should not call apply_rls_policies (different app)
         mock_apply.assert_not_called()
 
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     def test_auto_apply_model_without_policies(self, mock_apply):
         """Test signal handler with model that has no policies."""
         class TestModel(RLSModel, models.Model):
@@ -304,7 +304,7 @@ class TestAutoApplyRLSPolicies(TestCase):
         # Should not call apply_rls_policies (no policies)
         mock_apply.assert_not_called()
 
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     def test_auto_apply_multiple_models(self, mock_apply):
         """Test signal handler with multiple registered models."""
         class TestModel1(RLSModel, models.Model):
@@ -336,7 +336,7 @@ class TestAutoApplyRLSPolicies(TestCase):
         # Should call apply_rls_policies for both models
         assert mock_apply.call_count == 2
 
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     @patch('django_postgres_rls.signals.logger')
     def test_auto_apply_handles_errors(self, mock_logger, mock_apply):
         """Test signal handler handles errors gracefully."""
@@ -363,7 +363,7 @@ class TestAutoApplyRLSPolicies(TestCase):
         # Should log error
         mock_logger.error.assert_called()
 
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     def test_auto_apply_verbosity_levels(self, mock_apply):
         """Test signal handler with different verbosity levels."""
         class TestModel(RLSModel, models.Model):
@@ -395,7 +395,7 @@ class TestSetupRLSForApp(TestCase):
     """Test setup_rls_for_app function."""
 
     @patch('django_postgres_rls.signals.apps.get_app_config')
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     def test_setup_rls_for_app_basic(self, mock_apply, mock_get_app):
         """Test basic app setup."""
         # Create mock models
@@ -442,7 +442,7 @@ class TestSetupRLSForApp(TestCase):
         setup_rls_for_app('test_app', verbosity=1)
 
     @patch('django_postgres_rls.signals.apps.get_app_config')
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     @patch('django_postgres_rls.signals.logger')
     def test_setup_rls_for_app_handles_errors(self, mock_logger, mock_apply, mock_get_app):
         """Test setup handles errors gracefully."""
@@ -468,7 +468,7 @@ class TestSetupRLSForApp(TestCase):
 class TestSetupRLSForModel(TestCase):
     """Test setup_rls_for_model function."""
 
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     def test_setup_rls_for_model_basic(self, mock_apply):
         """Test basic model setup."""
         class TestModel(RLSModel, models.Model):
@@ -484,7 +484,7 @@ class TestSetupRLSForModel(TestCase):
         # Should call apply_rls_policies
         mock_apply.assert_called_once_with(TestModel, verbosity=1)
 
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     @patch('django_postgres_rls.signals.logger')
     def test_setup_rls_for_model_no_policies(self, mock_logger, mock_apply):
         """Test setup for model without policies."""
@@ -497,7 +497,7 @@ class TestSetupRLSForModel(TestCase):
         # Should not call apply_rls_policies
         mock_apply.assert_not_called()
 
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     @patch('django_postgres_rls.signals.logger')
     def test_setup_rls_for_model_handles_errors(self, mock_logger, mock_apply):
         """Test setup handles errors."""
@@ -516,7 +516,7 @@ class TestSetupRLSForModel(TestCase):
         # Should log error
         mock_logger.error.assert_called()
 
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     def test_setup_rls_for_model_verbosity_levels(self, mock_apply):
         """Test setup with different verbosity levels."""
         class TestModel(RLSModel, models.Model):
@@ -546,7 +546,7 @@ class TestIntegration(TestCase):
         from django_postgres_rls.signals import _rls_model_registry
         _rls_model_registry.clear()
 
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     def test_register_and_auto_apply(self, mock_apply):
         """Test full workflow: register model and auto-apply on migrate."""
         @register_rls_model
@@ -575,7 +575,7 @@ class TestIntegration(TestCase):
         mock_apply.assert_called_once()
 
     @patch('django_postgres_rls.signals.apps.get_app_config')
-    @patch('django_postgres_rls.signals.apply_rls_policies')
+    @patch('django_postgres_rls.management_utils.apply_rls_policies')
     def test_setup_multiple_models_in_app(self, mock_apply, mock_get_app):
         """Test setting up multiple models in the same app."""
         class TestModel1(RLSModel, models.Model):

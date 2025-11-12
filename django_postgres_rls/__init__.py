@@ -32,22 +32,22 @@ def __getattr__(name):
         from .models import PolicyMode
         return PolicyMode
     elif name == "generate_rls_migration_operations":
-        from .management import generate_rls_migration_operations
+        from .management_utils import generate_rls_migration_operations
         return generate_rls_migration_operations
     elif name == "generate_rls_migration_code":
-        from .management import generate_rls_migration_code
+        from .management_utils import generate_rls_migration_code
         return generate_rls_migration_code
     elif name == "CreateRLSPoliciesOperation":
-        from .management import CreateRLSPoliciesOperation
+        from .management_utils import CreateRLSPoliciesOperation
         return CreateRLSPoliciesOperation
     elif name == "EnableRLSOperation":
-        from .management import EnableRLSOperation
+        from .management_utils import EnableRLSOperation
         return EnableRLSOperation
     elif name == "apply_rls_policies":
-        from .management import apply_rls_policies
+        from .management_utils import apply_rls_policies
         return apply_rls_policies
     elif name == "drop_rls_policies":
-        from .management import drop_rls_policies
+        from .management_utils import drop_rls_policies
         return drop_rls_policies
     elif name == "register_rls_model":
         from .signals import register_rls_model

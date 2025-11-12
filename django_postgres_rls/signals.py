@@ -14,7 +14,8 @@ from django.db.models.signals import pre_migrate, post_migrate
 from django.dispatch import receiver
 from psycopg2 import sql
 
-from .management import apply_rls_policies
+# Import from management_utils module
+from . import management_utils
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +268,7 @@ def auto_apply_rls_policies(sender, app_config, verbosity, **kwargs):
             if verbosity >= 1:
                 logger.info(f"  {model_name}: Applying RLS policies...")
 
-            created, skipped = apply_rls_policies(model, verbosity=verbosity)
+            created, skipped = management_utils.apply_rls_policies(model, verbosity=verbosity)
             total_created += created
             total_skipped += skipped
 
@@ -333,7 +334,7 @@ def setup_rls_for_app(app_label: str, verbosity: int = 1) -> None:
             if verbosity >= 1:
                 logger.info(f"  {model_name}: Applying RLS policies...")
 
-            created, skipped = apply_rls_policies(model, verbosity=verbosity)
+            created, skipped = management_utils.apply_rls_policies(model, verbosity=verbosity)
             total_created += created
             total_skipped += skipped
 
@@ -376,7 +377,7 @@ def setup_rls_for_model(model: Type, verbosity: int = 1) -> None:
         if verbosity >= 1:
             logger.info(f"{model_name}: Applying RLS policies...")
 
-        created, skipped = apply_rls_policies(model, verbosity=verbosity)
+        created, skipped = management_utils.apply_rls_policies(model, verbosity=verbosity)
 
         if verbosity >= 1:
             logger.info(
