@@ -89,28 +89,27 @@ class RlsAllowAll:
     Useful for creating blanket permissions for specific roles or commands.
 
     Args:
-        mode: Policy mode (RESTRICTIVE or PERMISSIVE). Required.
-            - PERMISSIVE: Allows all rows as one of multiple permissive policies
-            - RESTRICTIVE: All rows pass this restrictive check (used with other restrictive policies)
         role_name: PostgreSQL role name (optional). Defaults to PUBLIC (all roles).
         command: Policy command (ALL, SELECT, INSERT, UPDATE, DELETE). Defaults to PolicyCommand.ALL.
+        mode: Policy mode (RESTRICTIVE or PERMISSIVE). Defaults to PolicyMode.PERMISSIVE.
+            - PERMISSIVE (default): Allows all rows as one of multiple permissive policies
+            - RESTRICTIVE: All rows pass this restrictive check (used with other restrictive policies)
         name: Custom policy name (optional). Auto-generated if not specified.
 
     Returns:
         RlsPolicy: An RlsPolicy instance with Value(True) as the using clause.
 
     Example:
-        # Allow superusers to see all rows (permissive)
+        # Allow superusers to see all rows (uses default PERMISSIVE mode)
         RlsAllowAll(
-            mode=PolicyMode.PERMISSIVE,
             role_name='app_superuser',
             command=PolicyCommand.SELECT
         )
 
         # All users pass this restrictive check (use with other restrictive policies)
         RlsAllowAll(
-            mode=PolicyMode.RESTRICTIVE,
             role_name='app_user',
+            mode=PolicyMode.RESTRICTIVE,
             command=PolicyCommand.ALL,
             name='user_base_access'
         )
@@ -118,14 +117,16 @@ class RlsAllowAll:
 
     def __new__(
         cls,
-        mode: str,
         role_name: Optional[str] = None,
         command: str = None,
+        mode: str = None,
         name: Optional[str] = None
     ):
         """Create an allow-all RLS policy."""
         if command is None:
             command = PolicyCommand.ALL
+        if mode is None:
+            mode = PolicyMode.PERMISSIVE
 
         return RlsPolicy(
             using=Value(True),
@@ -144,20 +145,19 @@ class RlsDenyAll:
     Useful for creating blanket restrictions or explicit denials.
 
     Args:
-        mode: Policy mode (RESTRICTIVE or PERMISSIVE). Required.
-            - RESTRICTIVE: Denies all rows as a restrictive policy (nothing passes)
-            - PERMISSIVE: This permissive policy never matches (use with other permissive policies)
         role_name: PostgreSQL role name (optional). Defaults to PUBLIC (all roles).
         command: Policy command (ALL, SELECT, INSERT, UPDATE, DELETE). Defaults to PolicyCommand.ALL.
+        mode: Policy mode (RESTRICTIVE or PERMISSIVE). Defaults to PolicyMode.RESTRICTIVE.
+            - RESTRICTIVE (default): Denies all rows as a restrictive policy (nothing passes)
+            - PERMISSIVE: This permissive policy never matches (use with other permissive policies)
         name: Custom policy name (optional). Auto-generated if not specified.
 
     Returns:
         RlsPolicy: An RlsPolicy instance with Value(False) as the using clause.
 
     Example:
-        # Deny all access to a specific role (restrictive)
+        # Deny all access to a specific role (uses default RESTRICTIVE mode)
         RlsDenyAll(
-            mode=PolicyMode.RESTRICTIVE,
             role_name='app_guest',
             command=PolicyCommand.DELETE,
             name='guest_no_delete'
@@ -172,14 +172,16 @@ class RlsDenyAll:
 
     def __new__(
         cls,
-        mode: str,
         role_name: Optional[str] = None,
         command: str = None,
+        mode: str = None,
         name: Optional[str] = None
     ):
         """Create a deny-all RLS policy."""
         if command is None:
             command = PolicyCommand.ALL
+        if mode is None:
+            mode = PolicyMode.RESTRICTIVE
 
         return RlsPolicy(
             using=Value(False),

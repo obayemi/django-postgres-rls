@@ -11,6 +11,8 @@ A Django middleware package for implementing PostgreSQL Row-Level Security using
 - **Declarative Policy Definition**: Define RLS policies in your Django models using the `RLSModel` mixin
 - **Session Variable Expressions**: Django F-like expressions (`SessionVar`, `CurrentUserId`) for clean, type-safe policy definitions
 - **Django Expression Support**: Full support for `Q` objects, `Exists` subqueries, `Value`, `F`, and other Django expressions in policies
+- **OuterRef Support**: Lambda expressions for proper `OuterRef` context resolution in policies
+- **Blanket Access Control**: `RlsAllowAll()` and `RlsDenyAll()` helpers for simple allow/deny rules
 - **Many-to-Many Support**: `RlsManyToManyField` automatically applies RLS policies to through tables
 - **Migration Generation**: Automatically generate migration code for RLS policies
 - **Auto-Apply on Migrate**: Optionally apply RLS policies automatically after migrations
@@ -191,7 +193,14 @@ Use the `RLSModel` mixin to define RLS policies declaratively:
 # myapp/models.py
 from django.db import models
 from django.db.models import Q, F, Exists, Value, OuterRef
-from django_postgres_rls import RLSModel, RlsPolicy, PolicyCommand, CurrentUserId
+from django_postgres_rls import (
+    RLSModel,
+    RlsPolicy,
+    PolicyCommand,
+    CurrentUserId,
+    RlsAllowAll,
+    RlsDenyAll,
+)
 
 
 class Document(RLSModel, models.Model):
@@ -224,7 +233,7 @@ class Document(RLSModel, models.Model):
             RlsPolicy(
                 role_name='app_staff',
                 command=PolicyCommand.ALL,
-                using='true'
+                using=RlsAllowAll()
             ),
         ]
 
@@ -482,150 +491,23 @@ RlsPolicy(
 )
 ```
 
-### Policy Examples
+### Blanket Access Control Helpers
+
+Use `RlsAllowAll()` and `RlsDenyAll()` for simple allow/deny policies:
 
 ```python
-from django_postgres_rls import RlsPolicy, PolicyCommand, PolicyMode, CurrentUserId, SessionVar
-from django.db.models import Q, F, Exists, Value, OuterRef, CharField
-
-# Simple owner-based policy (using CurrentUserId)
+# Allow all access for a role
 RlsPolicy(
-    role_name='app_user',
-    command=PolicyCommand.SELECT,
-    using=Q(owner_id=CurrentUserId())
-)
-
-# Using Django Q objects with session variables
-RlsPolicy(
-    role_name='app_user',
-    command=PolicyCommand.SELECT,
-    using=Q(is_public=True) | Q(owner_id=CurrentUserId())
-)
-
-# Using Exists subquery to check permissions table
-RlsPolicy(
-    role_name='app_user',
-    command=PolicyCommand.SELECT,
-    using=Exists(
-        Permission.objects.filter(
-            user_id=CurrentUserId(),
-            resource_id=F('id'),
-            can_read=True
-        )
-    )
-)
-
-# Using Exists for complex access control
-RlsPolicy(
-    role_name='app_user',
-    command=PolicyCommand.UPDATE,
-    using=Exists(
-        TeamMembership.objects.filter(
-            team_id=F('team_id'),
-            user_id=CurrentUserId(),
-            role__in=['admin', 'editor']
-        )
-    )
-)
-
-# Using Value expression for simple boolean policies
-RlsPolicy(
-    role_name='app_admin',
+    role_name='app_superuser',
     command=PolicyCommand.ALL,
-    using=Value(True)  # Admins can access everything
+    using=RlsAllowAll()  # Equivalent to Value(True) or 'true'
 )
 
-# Combining Q objects and Exists
+# Deny all access for a role
 RlsPolicy(
-    role_name='app_user',
-    command=PolicyCommand.SELECT,
-    using=Q(is_public=True) | Exists(
-        Subscription.objects.filter(
-            user_id=CurrentUserId(),
-            content_id=F('id'),
-            is_active=True
-        )
-    )
-)
-
-# Using OuterRef with lambda for proper context resolution
-RlsPolicy(
-    role_name='app_user',
-    command=PolicyCommand.SELECT,
-    using=lambda: Exists(
-        Permission.objects.filter(
-            resource_id=OuterRef('id'),
-            user_id=CurrentUserId(),
-            can_read=True
-        )
-    )
-)
-
-# Complex OuterRef example with multiple conditions
-RlsPolicy(
-    role_name='app_user',
-    command=PolicyCommand.UPDATE,
-    using=lambda: Exists(
-        TeamMembership.objects.filter(
-            team_id=OuterRef('team_id'),
-            user_id=CurrentUserId()
-        ).filter(
-            role__in=['admin', 'editor'],
-            is_active=True
-        )
-    )
-)
-
-# Different USING and WITH CHECK
-RlsPolicy(
-    role_name='app_user',
-    command=PolicyCommand.UPDATE,
-    using=Q(owner_id=CurrentUserId()),  # Can only update own rows
-    with_check=Q(owner_id=CurrentUserId()) & Q(status='draft')  # Can only set to draft
-)
-
-# Multiple session variables
-RlsPolicy(
-    role_name='app_user',
-    command=PolicyCommand.SELECT,
-    using=Q(owner_id=CurrentUserId()) & Q(organization_id=SessionVar('app.current_org_id'))
-)
-
-# Custom session variable with type
-RlsPolicy(
-    role_name='app_user',
-    command=PolicyCommand.SELECT,
-    using=Q(tenant_code=SessionVar('app.tenant_code', output_field=CharField(max_length=50)))
-)
-
-# Restrictive policy (must pass)
-RlsPolicy(
-    role_name='app_user',
-    command=PolicyCommand.SELECT,
-    using=Q(is_active=True),
-    mode=PolicyMode.RESTRICTIVE  # Must be active
-)
-
-# Permissive policy (OR alternative)
-RlsPolicy(
-    role_name='app_user',
-    command=PolicyCommand.SELECT,
-    using=Q(owner_id=CurrentUserId()),
-    mode=PolicyMode.PERMISSIVE  # OR can be owner
-)
-
-# Anonymous users - read-only access to public data
-RlsPolicy(
-    role_name='app_anonymous',
-    command=PolicyCommand.SELECT,
-    using=Q(is_public=True)
-)
-
-# Raw SQL (when needed for advanced cases)
-RlsPolicy(
-    role_name='app_user',
-    command=PolicyCommand.SELECT,
-    using="owner_id = current_setting('app.current_user_id')::int"
+    role_name='app_restricted',
+    command=PolicyCommand.ALL,
+    using=RlsDenyAll()  # Equivalent to Value(False) or 'false'
 )
 ```
 
@@ -957,7 +839,7 @@ class Document(RLSModel, models.Model):
             RlsPolicy(
                 role_name='app_staff',
                 command=PolicyCommand.ALL,
-                using="true"  # Staff can see all collaborations
+                using=RlsAllowAll()  # Staff can see all collaborations
             ),
         ],
         related_name='collaborated_documents'
@@ -971,75 +853,6 @@ class Document(RLSModel, models.Model):
                 using=Q(owner_id=CurrentUserId())
             ),
         ]
-```
-
-**With Explicit Through Models:**
-
-```python
-class DocumentCollaborator(models.Model):
-    """Explicit through model for document collaborations."""
-    document = models.ForeignKey(Document, on_delete=models.CASCADE)
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    role = models.CharField(max_length=50)  # e.g., 'viewer', 'editor'
-    added_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        db_table = 'document_collaborators'
-        unique_together = ['document', 'user']
-
-class Document(RLSModel, models.Model):
-    title = models.CharField(max_length=200)
-    owner_id = models.IntegerField()
-
-    collaborators = RlsManyToManyField(
-        'User',
-        through='DocumentCollaborator',
-        rls_policies=[
-            RlsPolicy(
-                role_name='app_user',
-                command=PolicyCommand.SELECT,
-                using=Q(document__owner_id=CurrentUserId()) | Q(user_id=CurrentUserId())
-            ),
-            RlsPolicy(
-                role_name='app_user',
-                command=PolicyCommand.INSERT,
-                with_check=Q(document__owner_id=CurrentUserId())
-            ),
-        ],
-    )
-```
-
-### Role Switching
-
-Implement role switching to allow users to operate with reduced privileges:
-
-```python
-class MyRLSMiddleware(PostgresRLSMiddleware):
-    def extract_role(self, request):
-        if not request.user or not request.user.is_authenticated:
-            return 'anonymous'
-
-        # Allow role switching via X-User-Role header
-        requested_role = request.META.get('HTTP_X_USER_ROLE', '').lower()
-
-        # Determine allowed roles
-        allowed_roles = ['user']
-        if request.user.is_staff:
-            allowed_roles.append('staff')
-        if request.user.is_superuser:
-            allowed_roles.append('superuser')
-
-        # Validate and use requested role
-        if requested_role in allowed_roles:
-            return requested_role
-
-        # Default role
-        if request.user.is_superuser:
-            return 'superuser'
-        elif request.user.is_staff:
-            return 'staff'
-
-        return 'user'
 ```
 
 ### Policy Management
@@ -1169,8 +982,8 @@ EXISTS (
     AND can_read = true
 )
 
-# Django Value expression
-Value(True)
+# RlsAllowAll() helper
+RlsAllowAll()
 
 # Generated SQL
 true

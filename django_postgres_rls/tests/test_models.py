@@ -862,6 +862,39 @@ class TestRlsAllowAll(TestCase):
         # Check for TRUE (the Value(True) should be converted to true in SQL)
         assert 'USING (TRUE)' in sql or 'USING (True)' in sql or 'USING (true)' in sql
 
+    def test_allow_all_defaults_to_permissive_mode(self):
+        """Test that RlsAllowAll defaults to PERMISSIVE mode when mode is not specified."""
+        policy = RlsAllowAll(
+            role_name='app_superuser'
+        )
+
+        assert policy.mode == PolicyMode.PERMISSIVE
+        assert policy.using.value is True
+        assert policy.role_name == 'app_superuser'
+
+    def test_allow_all_default_mode_generates_correct_sql(self):
+        """Test that RlsAllowAll with default mode generates PERMISSIVE SQL."""
+        class TestModel(RLSModel, models.Model):
+            name = models.CharField(max_length=100)
+
+            rls_policies = [
+                RlsAllowAll(
+                    role_name='app_admin',
+                    command=PolicyCommand.SELECT
+                ),
+            ]
+
+            class Meta:
+                app_label = 'test_models'
+                db_table = 'test_allow_all_default'
+
+        sql_statements = TestModel.get_policy_sql()
+        assert len(sql_statements) == 1
+
+        sql = sql_statements[0]
+        assert 'AS PERMISSIVE' in sql
+        assert 'TO app_admin' in sql
+
 
 class TestRlsDenyAll(TestCase):
     """Test RlsDenyAll helper class."""
@@ -960,6 +993,39 @@ class TestRlsDenyAll(TestCase):
         # Check for FALSE (the Value(False) should be converted to false in SQL)
         assert 'USING (FALSE)' in sql or 'USING (False)' in sql or 'USING (false)' in sql
 
+    def test_deny_all_defaults_to_restrictive_mode(self):
+        """Test that RlsDenyAll defaults to RESTRICTIVE mode when mode is not specified."""
+        policy = RlsDenyAll(
+            role_name='app_guest'
+        )
+
+        assert policy.mode == PolicyMode.RESTRICTIVE
+        assert policy.using.value is False
+        assert policy.role_name == 'app_guest'
+
+    def test_deny_all_default_mode_generates_correct_sql(self):
+        """Test that RlsDenyAll with default mode generates RESTRICTIVE SQL."""
+        class TestModel(RLSModel, models.Model):
+            name = models.CharField(max_length=100)
+
+            rls_policies = [
+                RlsDenyAll(
+                    role_name='app_guest',
+                    command=PolicyCommand.DELETE
+                ),
+            ]
+
+            class Meta:
+                app_label = 'test_models'
+                db_table = 'test_deny_all_default'
+
+        sql_statements = TestModel.get_policy_sql()
+        assert len(sql_statements) == 1
+
+        sql = sql_statements[0]
+        assert 'AS RESTRICTIVE' in sql
+        assert 'TO app_guest' in sql
+
 
 class TestRlsAllowDenyCombination(TestCase):
     """Test combinations of RlsAllowAll and RlsDenyAll."""
@@ -1009,3 +1075,48 @@ class TestRlsAllowDenyCombination(TestCase):
         # Check guest deny policy
         assert 'app_guest' in sql_statements[2]
         assert 'RESTRICTIVE' in sql_statements[2]
+
+    def test_combination_with_default_modes(self):
+        """Test combining allow-all and deny-all policies using default modes."""
+        class TestModel(RLSModel, models.Model):
+            name = models.CharField(max_length=100)
+            status = models.CharField(max_length=50)
+
+            rls_policies = [
+                # Superusers can see everything (uses default PERMISSIVE)
+                RlsAllowAll(
+                    role_name='app_superuser',
+                    command=PolicyCommand.SELECT
+                ),
+                # Guests can't delete anything (uses default RESTRICTIVE)
+                RlsDenyAll(
+                    role_name='app_guest',
+                    command=PolicyCommand.DELETE
+                ),
+            ]
+
+            class Meta:
+                app_label = 'test_models'
+                db_table = 'test_default_modes'
+
+        policies = TestModel.get_rls_policies()
+        assert len(policies) == 2
+
+        # Verify first policy has default PERMISSIVE mode
+        assert policies[0].mode == PolicyMode.PERMISSIVE
+        assert policies[0].using.value is True
+
+        # Verify second policy has default RESTRICTIVE mode
+        assert policies[1].mode == PolicyMode.RESTRICTIVE
+        assert policies[1].using.value is False
+
+        sql_statements = TestModel.get_policy_sql()
+        assert len(sql_statements) == 2
+
+        # Check superuser policy uses PERMISSIVE
+        assert 'app_superuser' in sql_statements[0]
+        assert 'AS PERMISSIVE' in sql_statements[0]
+
+        # Check guest policy uses RESTRICTIVE
+        assert 'app_guest' in sql_statements[1]
+        assert 'AS RESTRICTIVE' in sql_statements[1]
