@@ -31,6 +31,12 @@ def __getattr__(name):
     elif name == "PolicyMode":
         from .models import PolicyMode
         return PolicyMode
+    elif name == "RlsAllowAll":
+        from .models import RlsAllowAll
+        return RlsAllowAll
+    elif name == "RlsDenyAll":
+        from .models import RlsDenyAll
+        return RlsDenyAll
     elif name == "generate_rls_migration_operations":
         from .management_utils import generate_rls_migration_operations
         return generate_rls_migration_operations
@@ -107,6 +113,8 @@ __all__ = [
     "RlsManyToManyField",
     "PolicyCommand",
     "PolicyMode",
+    "RlsAllowAll",
+    "RlsDenyAll",
     # Database expressions
     "SessionVar",
     "CurrentUserId",
