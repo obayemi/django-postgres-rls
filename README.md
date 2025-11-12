@@ -190,7 +190,7 @@ Use the `RLSModel` mixin to define RLS policies declaratively:
 ```python
 # myapp/models.py
 from django.db import models
-from django.db.models import Q, F, Exists, Value
+from django.db.models import Q, F, Exists, Value, OuterRef
 from django_postgres_rls import RLSModel, RlsPolicy, PolicyCommand, CurrentUserId
 
 
@@ -244,12 +244,13 @@ class SecureDocument(RLSModel, models.Model):
     class Meta:
         rls_policies = [
             # Users can only see documents they own or have explicit read permissions
+            # Note: Using lambda with OuterRef for proper context resolution
             RlsPolicy(
                 role_name='app_user',
                 command=PolicyCommand.SELECT,
-                using=Q(owner_id=CurrentUserId()) | Exists(
+                using=lambda: Q(owner_id=CurrentUserId()) | Exists(
                     DocumentPermission.objects.filter(
-                        document_id=F('id'),
+                        document_id=OuterRef('id'),
                         user_id=CurrentUserId(),
                         can_read=True
                     )
@@ -259,9 +260,9 @@ class SecureDocument(RLSModel, models.Model):
             RlsPolicy(
                 role_name='app_user',
                 command=PolicyCommand.UPDATE,
-                using=Q(owner_id=CurrentUserId()) | Exists(
+                using=lambda: Q(owner_id=CurrentUserId()) | Exists(
                     DocumentPermission.objects.filter(
-                        document_id=F('id'),
+                        document_id=OuterRef('id'),
                         user_id=CurrentUserId(),
                         can_write=True
                     )
@@ -450,6 +451,7 @@ The `RlsPolicy` dataclass defines a PostgreSQL RLS policy with the following par
 - **`role_name`**: (Required) PostgreSQL role name (e.g., `'app_user'`, `'app_staff'`)
 - **`using`**: (Required) USING clause expression
   - Can be a Django `Q` object, Django `Expression` (e.g., `Exists`, `Value`, `F`), or raw SQL string
+  - Can also be a callable (lambda) that returns a `Q` object or `Expression` - **required for `OuterRef` support**
   - Defines which rows are visible/accessible
 - **`command`**: (Optional) Policy command
   - Defaults to `PolicyCommand.ALL`
@@ -460,14 +462,31 @@ The `RlsPolicy` dataclass defines a PostgreSQL RLS policy with the following par
   - PERMISSIVE: Row must pass AT LEAST ONE permissive policy (OR logic)
 - **`with_check`**: (Optional) WITH CHECK clause expression
   - Can be a Django `Q` object, Django `Expression` (e.g., `Exists`, `Value`, `F`), or raw SQL string
+  - Can also be a callable (lambda) that returns a `Q` object or `Expression` - **required for `OuterRef` support**
   - Defines which rows can be inserted/updated
   - If not specified, `using` expression is used
+
+**Important Note on OuterRef**: When using `OuterRef` in `Exists` subqueries, wrap the expression in a lambda to ensure proper context resolution:
+
+```python
+# ✅ Correct - using lambda with OuterRef
+RlsPolicy(
+    role_name='app_user',
+    using=lambda: Exists(Model.objects.filter(field=OuterRef('id')))
+)
+
+# ❌ Incorrect - direct OuterRef without lambda
+RlsPolicy(
+    role_name='app_user',
+    using=Exists(Model.objects.filter(field=OuterRef('id')))  # Will fail!
+)
+```
 
 ### Policy Examples
 
 ```python
 from django_postgres_rls import RlsPolicy, PolicyCommand, PolicyMode, CurrentUserId, SessionVar
-from django.db.models import Q, F, Exists, Value, CharField
+from django.db.models import Q, F, Exists, Value, OuterRef, CharField
 
 # Simple owner-based policy (using CurrentUserId)
 RlsPolicy(
@@ -524,6 +543,34 @@ RlsPolicy(
         Subscription.objects.filter(
             user_id=CurrentUserId(),
             content_id=F('id'),
+            is_active=True
+        )
+    )
+)
+
+# Using OuterRef with lambda for proper context resolution
+RlsPolicy(
+    role_name='app_user',
+    command=PolicyCommand.SELECT,
+    using=lambda: Exists(
+        Permission.objects.filter(
+            resource_id=OuterRef('id'),
+            user_id=CurrentUserId(),
+            can_read=True
+        )
+    )
+)
+
+# Complex OuterRef example with multiple conditions
+RlsPolicy(
+    role_name='app_user',
+    command=PolicyCommand.UPDATE,
+    using=lambda: Exists(
+        TeamMembership.objects.filter(
+            team_id=OuterRef('team_id'),
+            user_id=CurrentUserId()
+        ).filter(
+            role__in=['admin', 'editor'],
             is_active=True
         )
     )
@@ -1131,8 +1178,8 @@ true
 
 ## Testing
 
-The package includes a comprehensive test suite with **242 tests** covering all functionality:
-- **197 unit tests**: Fast, mocked database operations using PostgreSQL configuration
+The package includes a comprehensive test suite with **247 tests** covering all functionality:
+- **202 unit tests**: Fast, mocked database operations using PostgreSQL configuration
 - **45 integration tests**: Real PostgreSQL database tests with actual RLS policies
 
 **All tests use PostgreSQL** - the library is PostgreSQL-only by design.

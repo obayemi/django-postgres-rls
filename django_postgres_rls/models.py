@@ -6,9 +6,9 @@ declaratively in Django model Meta classes.
 """
 
 from dataclasses import dataclass
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Callable
 from django.db import models
-from django.db.models import Q, Exists, Value
+from django.db.models import Q, Exists, Value, OuterRef
 from django.db.models.expressions import Expression
 
 
@@ -97,8 +97,10 @@ class RlsPolicy:
         using: USING clause expression. Can be either:
             - A Django Q object (will be converted to SQL WHERE clause)
             - A Django Expression (Exists, Value, F, etc.)
+            - A callable (lambda) that returns a Q object or Expression
             - A raw SQL string expression
             This defines which rows are visible/accessible.
+            Use callables for expressions with OuterRef that need model context.
         name: Custom policy name (optional). If not specified, a name will be
             auto-generated based on the table name and policy index.
         mode: Policy mode (RESTRICTIVE or PERMISSIVE). Optional.
@@ -107,9 +109,11 @@ class RlsPolicy:
         with_check: WITH CHECK clause expression (optional). Can be either:
             - A Django Q object (will be converted to SQL WHERE clause)
             - A Django Expression (Exists, Value, F, etc.)
+            - A callable (lambda) that returns a Q object or Expression
             - A raw SQL string expression
             This defines which rows can be inserted/updated.
             If not specified, the USING expression is used.
+            Use callables for expressions with OuterRef that need model context.
 
     Example:
         RlsPolicy(
@@ -126,12 +130,12 @@ class RlsPolicy:
             with_check="owner_id = current_setting('app.current_user_id')::int"
         )
     """
-    using: Optional[Union[Q, Expression, str]] = None
+    using: Optional[Union[Q, Expression, str, Callable[[], Union[Q, Expression]]]] = None
     role_name: Optional[str] = None
     command: str = PolicyCommand.ALL
     name: Optional[str] = None
     mode: Optional[str] = None
-    with_check: Optional[Union[Q, Expression, str]] = None
+    with_check: Optional[Union[Q, Expression, str, Callable[[], Union[Q, Expression]]]] = None
 
     def __post_init__(self):
         """Validate policy configuration."""
@@ -329,28 +333,44 @@ class RLSModel(models.Model):
         return sql
 
     @classmethod
-    def _expression_to_sql(cls, expression: Expression) -> str:
+    def _expression_to_sql(cls, expression) -> str:
         """
         Convert a Django Expression object to SQL.
 
-        This handles Exists, Value, F, and other Expression subclasses.
+        This handles Exists, Value, F, and other Expression/BaseExpression subclasses.
+        Properly resolves OuterRef references by setting up query context.
 
         Args:
-            expression: Django Expression object to convert
+            expression: Django Expression or BaseExpression object to convert
 
         Returns:
             str: SQL expression
         """
         from django.db.models.sql import Query
 
-        # Create a query for this model
-        query = Query(cls)
+        # Create a query for this model to serve as the outer query context
+        outer_query = Query(cls)
 
-        # Get the SQL compiler
-        compiler = query.get_compiler(using='default')
+        # Add the model's table to the query so OuterRef can resolve against it
+        # This simulates the outer query context that OuterRef expects
+        outer_query.get_initial_alias()
+
+        # Get the SQL compiler for the outer query
+        compiler = outer_query.get_compiler(using='default')
+
+        # Resolve the expression with the outer query context
+        # This allows OuterRef to properly resolve to column references
+        try:
+            resolved_expression = expression.resolve_expression(
+                outer_query, allow_joins=True, reuse=None, summarize=False, for_save=False
+            )
+        except (AttributeError, TypeError):
+            # If expression doesn't support resolve_expression, use it as-is
+            resolved_expression = expression
 
         # Compile the expression to SQL
-        sql, params = expression.as_sql(compiler, compiler.connection)
+        # For Exists subqueries with OuterRef, this will properly resolve the references
+        sql, params = resolved_expression.as_sql(compiler, compiler.connection)
 
         # Replace %s placeholders with actual values
         if params:
@@ -358,6 +378,13 @@ class RLSModel(models.Model):
                 f"'{p}'" if isinstance(p, str) else str(p)
                 for p in params
             )
+
+        # Clean up the SQL by replacing the table alias with the table name
+        # Django generates aliases like T1, T2, etc. We want the actual table name
+        table_name = cls._meta.db_table
+        # Replace T1. with table_name. for proper RLS policy context
+        # The RLS policy SQL doesn't use aliases, it references the table directly
+        sql = sql.replace(f'"{table_name}".', '')
 
         return sql
 
@@ -412,22 +439,36 @@ class RLSModel(models.Model):
 
             # Add USING clause
             if policy.using:
-                if isinstance(policy.using, Q):
-                    using_sql = cls._q_to_sql(policy.using)
-                elif isinstance(policy.using, Expression):
-                    using_sql = cls._expression_to_sql(policy.using)
+                # Handle callable (lambda) that returns an expression
+                using_value = policy.using() if callable(policy.using) else policy.using
+
+                if isinstance(using_value, Q):
+                    using_sql = cls._q_to_sql(using_value)
+                elif isinstance(using_value, str):
+                    # Plain SQL string
+                    using_sql = using_value
+                elif hasattr(using_value, 'as_sql'):
+                    # Any object with as_sql method (Expression, BaseExpression, Exists, etc.)
+                    using_sql = cls._expression_to_sql(using_value)
                 else:
-                    using_sql = policy.using
+                    using_sql = str(using_value)
                 sql_parts.append(f"USING ({using_sql})")
 
             # Add WITH CHECK clause if specified
             if policy.with_check:
-                if isinstance(policy.with_check, Q):
-                    with_check_sql = cls._q_to_sql(policy.with_check)
-                elif isinstance(policy.with_check, Expression):
-                    with_check_sql = cls._expression_to_sql(policy.with_check)
+                # Handle callable (lambda) that returns an expression
+                with_check_value = policy.with_check() if callable(policy.with_check) else policy.with_check
+
+                if isinstance(with_check_value, Q):
+                    with_check_sql = cls._q_to_sql(with_check_value)
+                elif isinstance(with_check_value, str):
+                    # Plain SQL string
+                    with_check_sql = with_check_value
+                elif hasattr(with_check_value, 'as_sql'):
+                    # Any object with as_sql method (Expression, BaseExpression, Exists, etc.)
+                    with_check_sql = cls._expression_to_sql(with_check_value)
                 else:
-                    with_check_sql = policy.with_check
+                    with_check_sql = str(with_check_value)
                 sql_parts.append(f"WITH CHECK ({with_check_sql})")
 
             # Join all parts with newlines for readability

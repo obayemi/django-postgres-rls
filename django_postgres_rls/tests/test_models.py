@@ -11,7 +11,7 @@ Tests cover:
 
 import pytest
 from django.db import models
-from django.db.models import Q, F, Exists, Value
+from django.db.models import Q, F, Exists, Value, OuterRef
 from django.test import TestCase
 
 from django_postgres_rls import (
@@ -490,6 +490,7 @@ class TestExpressionObjects(TestCase):
         """Create test model classes."""
         class RelatedModel(RLSModel, models.Model):
             owner_id = models.IntegerField()
+            is_active = models.BooleanField(default=True)
 
             class Meta:
                 app_label = 'test_models'
@@ -648,3 +649,115 @@ class TestExpressionObjects(TestCase):
 
         assert isinstance(policy.using, Q)
         assert isinstance(policy.with_check, Exists)
+
+    def test_policy_with_outerref_using_lambda(self):
+        """Test creating policy with Exists and OuterRef using lambda."""
+        policy = RlsPolicy(
+            role_name='app_user',
+            command=PolicyCommand.SELECT,
+            using=lambda: Exists(
+                self.RelatedModel.objects.filter(owner_id=OuterRef('owner_id'))
+            )
+        )
+
+        # The using field should be a callable
+        assert callable(policy.using)
+
+        # When called, it should return an Exists expression
+        using_expr = policy.using()
+        assert isinstance(using_expr, Exists)
+
+    def test_get_policy_sql_with_outerref(self):
+        """Test get_policy_sql generates correct SQL for Exists with OuterRef."""
+        class TestModelWithOuterRef(RLSModel, models.Model):
+            name = models.CharField(max_length=100)
+            owner_id = models.IntegerField()
+
+            rls_policies = [
+                RlsPolicy(
+                    role_name='app_user',
+                    command=PolicyCommand.SELECT,
+                    using=lambda: Exists(
+                        self.RelatedModel.objects.filter(owner_id=OuterRef('owner_id'))
+                    )
+                ),
+            ]
+
+            class Meta:
+                app_label = 'test_models'
+                db_table = 'test_outerref_policy'
+
+        sql_statements = TestModelWithOuterRef.get_policy_sql()
+        assert len(sql_statements) == 1
+
+        sql = sql_statements[0]
+        assert 'CREATE POLICY' in sql
+        assert 'ON test_outerref_policy' in sql
+        assert 'FOR SELECT' in sql
+        assert 'TO app_user' in sql
+        assert 'USING' in sql
+        assert 'EXISTS' in sql.upper()
+        # Should reference owner_id from the outer table
+        assert 'owner_id' in sql.lower()
+
+    def test_expression_to_sql_with_outerref(self):
+        """Test _expression_to_sql method handles OuterRef correctly."""
+        # Create an Exists subquery with OuterRef
+        exists_expr = Exists(
+            self.RelatedModel.objects.filter(owner_id=OuterRef('owner_id'))
+        )
+
+        # This should not raise an error now
+        sql = self.TestModel._expression_to_sql(exists_expr)
+
+        # Should contain EXISTS and reference to both tables
+        assert 'EXISTS' in sql.upper()
+        assert 'test_related' in sql.lower()
+        assert 'owner_id' in sql.lower()
+
+    def test_complex_outerref_with_multiple_conditions(self):
+        """Test Exists with OuterRef and multiple filter conditions."""
+        class ComplexModel(RLSModel, models.Model):
+            document_id = models.IntegerField()
+            user_id = models.IntegerField()
+            is_active = models.BooleanField()
+
+            rls_policies = [
+                RlsPolicy(
+                    role_name='app_user',
+                    command=PolicyCommand.SELECT,
+                    using=lambda: Exists(
+                        self.RelatedModel.objects.filter(
+                            owner_id=OuterRef('user_id')
+                        ).filter(
+                            is_active=True
+                        )
+                    )
+                ),
+            ]
+
+            class Meta:
+                app_label = 'test_models'
+                db_table = 'test_complex_outerref'
+
+        sql_statements = ComplexModel.get_policy_sql()
+        assert len(sql_statements) == 1
+
+        sql = sql_statements[0]
+        assert 'EXISTS' in sql.upper()
+        assert 'test_related' in sql.lower()
+
+    def test_outerref_in_with_check(self):
+        """Test OuterRef works in with_check clause as well."""
+        policy = RlsPolicy(
+            role_name='app_user',
+            command=PolicyCommand.INSERT,
+            using=Value(True),
+            with_check=lambda: Exists(
+                self.RelatedModel.objects.filter(owner_id=OuterRef('owner_id'))
+            )
+        )
+
+        # Both should work
+        assert callable(policy.using) is False
+        assert callable(policy.with_check) is True
